@@ -16,8 +16,8 @@ Function Invoke-AddStandardsDeploy {
 
     try {
         $Tenants = ($Request.body | Select-Object Select_*).psobject.properties.value
-        $Settings = ($request.body | Select-Object -Property *, 'v2' -ExcludeProperty Select_*, None )
-        $Settings.v2 = $true
+        $Settings = ($request.body | Select-Object -Property *, v2* -ExcludeProperty Select_*, None )
+        $Settings | Add-Member -NotePropertyName 'v2.1' -NotePropertyValue $true -Force
         foreach ($Tenant in $tenants) {
         
             $object = [PSCustomObject]@{
@@ -34,12 +34,12 @@ Function Invoke-AddStandardsDeploy {
                 RowKey       = "$Tenant"
                 PartitionKey = 'standards'
             }
+            Write-LogMessage -user $request.headers.'x-ms-client-principal' -tenant $tenant -API 'Standards' -message 'Successfully added standards deployment' -Sev 'Info'
         }
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Successfully added standards deployment' -Sev 'Info'
         $body = [pscustomobject]@{'Results' = 'Successfully added standards deployment' }
     }
     catch {
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Standards API failed. Error:$($_.Exception.Message)" -Sev 'Error'
+        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API 'Standards' -message "Standards API failed. Error:$($_.Exception.Message)" -Sev 'Error'
         $body = [pscustomobject]@{'Results' = "Failed to add standard: $($_.Exception.Message)" }
     }
 
