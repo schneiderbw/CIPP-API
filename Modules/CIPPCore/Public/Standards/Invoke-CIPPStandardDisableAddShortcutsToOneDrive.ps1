@@ -1,8 +1,33 @@
 function Invoke-CIPPStandardDisableAddShortcutsToOneDrive {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) DisableAddShortcutsToOneDrive
+    .SYNOPSIS
+        (Label) Disable Add Shortcuts To OneDrive
+    .DESCRIPTION
+        (Helptext) When the feature is disabled the option Add shortcut to OneDrive will be removed. Any folders that have already been added will remain on the user's computer.
+        (DocsDescription) When the feature is disabled the option Add shortcut to OneDrive will be removed. Any folders that have already been added will remain on the user's computer.
+    .NOTES
+        CAT
+            SharePoint Standards
+        TAG
+            "mediumimpact"
+        DISABLEDFEATURES
+            
+        ADDEDCOMPONENT
+        IMPACT
+            Medium Impact
+        POWERSHELLEQUIVALENT
+            Graph API or Portal
+        RECOMMENDEDBY
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
     #>
+
     param($Tenant, $Settings)
 
     If ($Settings.remediate -eq $true) {
@@ -60,7 +85,7 @@ function Invoke-CIPPStandardDisableAddShortcutsToOneDrive {
         }
 
         try {
-            $tenantName = (New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/sites/root' -tenantid $TenantFilter).id.Split('.')[0]
+                $tenantName = (New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/sites/root' -asApp $true -tenantid $TenantFilter).id.Split('.')[0]
             $AdminUrl = "https://$($tenantName)-admin.sharepoint.com"
             $graphRequest = @{
                 'scope'       = "$AdminURL/.default"
