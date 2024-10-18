@@ -6,7 +6,7 @@ function Push-Schedulerwebhookcreation {
     param (
         $item
     )
-    $Table = Get-CIPPTable -TableName 'SchedulerConfig'
+    <#$Table = Get-CIPPTable -TableName 'SchedulerConfig'
     $WebhookTable = Get-CIPPTable -TableName 'webhookTable'
     $Tenant = $Item.Tenant
     $Row = Get-CIPPAzDataTableEntity @Table -Filter "RowKey eq '$($item.SchedulerRow)'"
@@ -22,6 +22,13 @@ function Push-Schedulerwebhookcreation {
             if ($Row.tenantid -ne 'AllTenants') {
                 Remove-AzDataTableEntity @Table -Entity $Row
             }
+            if (($Webhook | Measure-Object).Count -gt 1) {
+                $Webhook = $Webhook | Select-Object -First 1
+                $WebhooksToRemove = $ExistingWebhooks | Where-Object { $_.RowKey -ne $Webhook.RowKey }
+                foreach ($RemoveWebhook in $WebhooksToRemove) {
+                    Remove-AzDataTableEntity @WebhookTable -Entity $RemoveWebhook
+                }
+            }
         } else {
             Write-Information "No existing webhook for $Tenant - $($Row.webhookType) - Time to create."
             try {
@@ -35,6 +42,6 @@ function Push-Schedulerwebhookcreation {
                 Write-Information "Failed to create webhook for $Tenant - $($Row.webhookType): $($_.Exception.Message)"
             }
         }
-    }
+    }#>
 
 }
