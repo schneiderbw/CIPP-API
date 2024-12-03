@@ -21,7 +21,7 @@ function Add-CIPPScheduledTask {
     $Parameters = [System.Collections.Hashtable]@{}
     foreach ($Key in $task.Parameters.PSObject.Properties.Name) {
         $Param = $task.Parameters.$Key
-        if ($Param -is [System.Collections.IDictionary]) {
+        if ($Param -is [System.Collections.IDictionary] -or $Param.Key) {
             $ht = @{}
             foreach ($p in $Param.GetEnumerator()) {
                 $ht[$p.Key] = $p.Value
@@ -49,6 +49,10 @@ function Add-CIPPScheduledTask {
         $task.Recurrence
     } else {
         $task.Recurrence.value
+    }
+
+    if ([int64]$task.ScheduledTime -eq 0 -or [string]::IsNullOrEmpty($task.ScheduledTime)) {
+        $task.ScheduledTime = [int64](([datetime]::UtcNow) - (Get-Date '1/1/1970')).TotalSeconds
     }
 
     $entity = @{
