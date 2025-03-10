@@ -138,15 +138,15 @@ function Get-GraphRequestList {
                 $Table = Get-CIPPTable -TableName $TableName
                 $Timestamp = (Get-Date).AddHours(-1).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffK')
                 if ($TenantFilter -eq 'AllTenants') {
-                    $Filter = "PartitionKey eq '{0}' and QueueType eq 'AllTenants' and Timestamp ge datetime'{1}'" -f $PartitionKey, $Timestamp
+                    $Filter = "PartitionKey eq '{0}' and Timestamp ge datetime'{1}'" -f $PartitionKey, $Timestamp
                 } else {
-                    $Filter = "PartitionKey eq '{0}' and Tenant eq '{1}' and Timestamp ge datetime'{2}'" -f $PartitionKey, $TenantFilter, $Timestamp
+                    $Filter = "PartitionKey eq '{0}' and (RowKey eq '{1}' or OriginalEntityId eq '{1}') and Timestamp ge datetime'{2}'" -f $PartitionKey, $TenantFilter, $Timestamp
                 }
                 $Rows = Get-CIPPAzDataTableEntity @Table -Filter $Filter
                 $Type = 'Cache'
                 Write-Information "Cached: $(($Rows | Measure-Object).Count) rows (Type: $($Type))"
                 $QueueReference = '{0}-{1}' -f $TenantFilter, $PartitionKey
-                $RunningQueue = Invoke-ListCippQueue | Where-Object { $_.Reference -eq $QueueReference -and $_.Status -ne 'Completed' -and $_.Status -ne 'Failed' }
+                $RunningQueue = Invoke-ListCippQueue | Where-Object { $_.Reference -eq $QueueReference -and $_.Status -notmatch 'Completed' -and $_.Status -notmatch 'Failed' }
             }
         }
     } catch {
@@ -160,7 +160,19 @@ function Get-GraphRequestList {
         $GraphQuery = [System.UriBuilder]('https://graph.microsoft.com/{0}/{1}' -f $Version, $Endpoint)
         $ParamCollection = [System.Web.HttpUtility]::ParseQueryString([String]::Empty)
         foreach ($Item in ($Parameters.GetEnumerator() | Sort-Object -CaseSensitive -Property Key)) {
-            $ParamCollection.Add($Item.Key, $Item.Value)
+            $ParamCollection.Add($Item.Key, $Item.Value -replace '%tenantid%', $TenantId)
+        }
+        $GraphQuery.Query = $ParamCollection.ToString()
+        $GraphRequest.uri = $GraphQuery.ToString()
+    }
+
+    if ($TenantFilter -ne 'AllTenants' -and $Endpoint -match '%appid%') {
+        Write-Information "Replacing AppId in endpoint with $env:ApplicationID"
+        $Endpoint = $Endpoint -replace '%appid%', $env:ApplicationID
+        $GraphQuery = [System.UriBuilder]('https://graph.microsoft.com/{0}/{1}' -f $Version, $Endpoint)
+        $ParamCollection = [System.Web.HttpUtility]::ParseQueryString([String]::Empty)
+        foreach ($Item in ($Parameters.GetEnumerator() | Sort-Object -CaseSensitive -Property Key)) {
+            $ParamCollection.Add($Item.Key, $Item.Value -replace '%appid%', $env:ApplicationID)
         }
         $GraphQuery.Query = $ParamCollection.ToString()
         $GraphRequest.uri = $GraphQuery.ToString()
@@ -178,7 +190,7 @@ function Get-GraphRequestList {
                             TenantFilter                = $_.defaultDomainName
                             Endpoint                    = $using:Endpoint
                             Parameters                  = $using:Parameters
-                            NoPagination                = $using:NoPagination.IsPresent
+                            NoPagination                = $false
                             ReverseTenantLookupProperty = $using:ReverseTenantLookupProperty
                             ReverseTenantLookup         = $using:ReverseTenantLookup.IsPresent
                             NoAuthCheck                 = $using:NoAuthCheck.IsPresent
@@ -325,8 +337,16 @@ function Get-GraphRequestList {
             }
         }
     } else {
-        $Rows | ForEach-Object {
-            $_.Data | ConvertFrom-Json
+        foreach ($Row in $Rows) {
+            if ($Row.Data) {
+                try {
+                    $Row.Data | ConvertFrom-Json -ErrorAction Stop
+                } catch {
+                    Write-Warning "Could not convert data to JSON: $($_.Exception.Message)"
+                    #Write-Information ($Row | ConvertTo-Json)
+                    continue
+                }
+            }
         }
     }
 }

@@ -8,6 +8,10 @@ function Invoke-ExecServicePrincipals {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
+
     $TenantFilter = $env:TenantID
 
     $Success = $true
@@ -22,7 +26,8 @@ function Invoke-ExecServicePrincipals {
                         'appId' = $Request.Query.AppId
                     } | ConvertTo-Json -Compress
                     try {
-                        $Results = New-GraphPostRequest -Uri 'https://graph.microsoft.com/beta/servicePrincipals' -tenantid $TenantFilter -type POST -body $Body
+                        $ServicePrincipal = New-GraphPostRequest -Uri 'https://graph.microsoft.com/beta/servicePrincipals' -tenantid $TenantFilter -type POST -body $Body -NoAuthCheck $true
+                        $Results = "Created service principal for $($ServicePrincipal.displayName) ($($ServicePrincipal.appId))"
                     } catch {
                         $Results = "Unable to create service principal: $($_.Exception.Message)"
                         $Success = $false
@@ -39,8 +44,7 @@ function Invoke-ExecServicePrincipals {
                 } elseif ($Request.Query.Id) {
                     $Action = 'Get'
                     $Results = New-GraphGetRequest -Uri "https://graph.microsoft.com/beta/servicePrincipals/$($Request.Query.Id)" -tenantid $TenantFilter -NoAuthCheck $true
-                }
-                else {
+                } else {
                     $Action = 'List'
                     $Results = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/servicePrincipals?$top=999&$orderby=displayName&$count=true' -ComplexFilter -tenantid $TenantFilter -NoAuthCheck $true
                 }
@@ -54,6 +58,10 @@ function Invoke-ExecServicePrincipals {
     $Metadata = @{
         'Action'  = $Action
         'Success' = $Success
+    }
+
+    if ($ServicePrincipal) {
+        $Metadata.ServicePrincipal = $ServicePrincipal
     }
 
     if ($Request.Query.AppId) {
