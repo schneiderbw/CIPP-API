@@ -13,17 +13,18 @@ function Invoke-CIPPStandardEnableLitigationHold {
         CAT
             Exchange Standards
         TAG
-            "lowimpact"
         ADDEDCOMPONENT
         IMPACT
             Low Impact
+        ADDEDDATE
+            2024-06-25
         POWERSHELLEQUIVALENT
             Set-Mailbox -LitigationHoldEnabled \$true
         RECOMMENDEDBY
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/exchange-standards#low-impact
     #>
 
     param($Tenant, $Settings)
@@ -38,13 +39,18 @@ function Invoke-CIPPStandardEnableLitigationHold {
         } else {
             try {
                 $Request = $MailboxesNoLitHold | ForEach-Object {
-                    @{
+                    $params = @{
                         CmdletInput = @{
                             CmdletName = 'Set-Mailbox'
                             Parameters = @{ Identity = $_.UserPrincipalName; LitigationHoldEnabled = $true }
                         }
                     }
+                    if ($Settings.days -ne $null) {
+                        $params.CmdletInput.Parameters['LitigationHoldDuration'] = $Settings.days
+                    }
+                    $params
                 }
+
 
                 $BatchResults = New-ExoBulkRequest -tenantid $tenant -cmdletArray @($Request)
                 $BatchResults | ForEach-Object {

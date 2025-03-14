@@ -5,28 +5,30 @@ function Invoke-CIPPStandardSPEmailAttestation {
     .COMPONENT
         (APIName) SPEmailAttestation
     .SYNOPSIS
-        (Label) Require reauthentication with verification code
+        (Label) Require re-authentication with verification code
     .DESCRIPTION
-        (Helptext) Ensure reauthentication with verification code is restricted
-        (DocsDescription) Ensure reauthentication with verification code is restricted
+        (Helptext) Ensure re-authentication with verification code is restricted
+        (DocsDescription) Ensure re-authentication with verification code is restricted
     .NOTES
         CAT
             SharePoint Standards
         TAG
-            "mediumimpact"
             "CIS"
         ADDEDCOMPONENT
-            {"type":"number","name":"standards.SPEmailAttestation.Days","label":"Require reauth every X Days (Default 15)"}
+            {"type":"number","name":"standards.SPEmailAttestation.Days","label":"Require re-authentication every X Days (Default 15)"}
         IMPACT
             Medium Impact
+        ADDEDDATE
+            2024-07-09
         POWERSHELLEQUIVALENT
             Set-SPOTenant -EmailAttestationRequired \$true -EmailAttestationReAuthDays 15
         RECOMMENDEDBY
-            "CIS 3.0"
+            "CIS"
+            "CIPP"
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/sharepoint-standards#medium-impact
     #>
 
     param($Tenant, $Settings)
@@ -40,7 +42,7 @@ function Invoke-CIPPStandardSPEmailAttestation {
 
     if ($Settings.remediate -eq $true) {
         if ($StateIsCorrect -eq $true) {
-            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Sharepoint reauthentication with verification code is already restricted.' -Sev Info
+            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'SharePoint reauthentication with verification code is already restricted.' -Sev Info
         } else {
             $Properties = @{
                 EmailAttestationReAuthDays = $Settings.Days
