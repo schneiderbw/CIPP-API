@@ -13,10 +13,11 @@ function Invoke-CIPPStandardPhishProtection {
         CAT
             Global Standards
         TAG
-            "lowimpact"
         ADDEDCOMPONENT
         IMPACT
             Low Impact
+        ADDEDDATE
+            2024-01-22
         DISABLEDFEATURES
 
         POWERSHELLEQUIVALENT
@@ -26,7 +27,7 @@ function Invoke-CIPPStandardPhishProtection {
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/global-standards#low-impact
     #>
 
     param($Tenant, $Settings)
@@ -44,7 +45,7 @@ function Invoke-CIPPStandardPhishProtection {
     background-image: url(https://clone.cipp.app/api/PublicPhishingCheck?Tenantid=$($tenant)&URL=$($Settings.URL));
 }
 "@
-    If ($Settings.remediate -eq $true) {
+    if ($Settings.remediate -eq $true) {
 
         try {
             if (!$currentBody) {
@@ -76,11 +77,13 @@ function Invoke-CIPPStandardPhishProtection {
         if ($currentBody -like "*$CSS*") {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'PhishProtection is enabled.' -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'PhishProtection is not enabled.' -sev Alert
+            Write-StandardsAlert -message 'PhishProtection is not enabled' -object $currentBody -tenant $tenant -standardName 'PhishProtection' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'PhishProtection is not enabled.' -sev Info
         }
     }
     if ($Settings.report -eq $true) {
         if ($currentBody -like "*$CSS*") { $authstate = $true } else { $authstate = $false }
         Add-CIPPBPAField -FieldName 'PhishProtection' -FieldValue $authstate -StoreAs bool -Tenant $tenant
+        Set-CIPPStandardsCompareField -FieldName 'standards.PhishProtection' -FieldValue $authstate -Tenant $tenant
     }
 }

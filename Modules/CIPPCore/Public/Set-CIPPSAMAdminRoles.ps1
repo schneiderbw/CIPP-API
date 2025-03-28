@@ -20,8 +20,16 @@ function Set-CIPPSAMAdminRoles {
     $SAMRolesTable = Get-CIPPTable -tablename 'SAMRoles'
     $Roles = Get-CIPPAzDataTableEntity @SAMRolesTable
 
-    $SAMRoles = $Roles.Roles | ConvertFrom-Json
-    $Tenants = $Roles.Tenants | ConvertFrom-Json
+    try {
+        $SAMRoles = $Roles.Roles | ConvertFrom-Json -ErrorAction Stop
+        $Tenants = $Roles.Tenants | ConvertFrom-Json -ErrorAction Stop
+        if ($Tenants.value) {
+            $Tenants = $Tenants.value
+        }
+    } catch {
+        $ActionLogs.Add('CIPP-SAM roles not configured')
+        return $ActionLogs
+    }
 
     if (($SAMRoles | Measure-Object).count -gt 0 -and $Tenants -contains $TenantFilter -or $Tenants -contains 'AllTenants') {
         $AppMemberOf = New-GraphGetRequest -uri "https://graph.microsoft.com/beta/servicePrincipals(appId='$($ENV:ApplicationID)')/memberOf/#microsoft.graph.directoryRole" -tenantid $TenantFilter -AsApp $true
