@@ -3,22 +3,23 @@ using namespace System.Net
 Function Invoke-ListGraphExplorerPresets {
     <#
     .FUNCTIONALITY
-        Entrypoint
+        Entrypoint,AnyTenant
     .ROLE
         CIPP.Core.Read
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
 
-    $Username = ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($request.headers.'x-ms-client-principal')) | ConvertFrom-Json).userDetails
-    # Write to the Azure Functions log stream.
-    Write-Host 'PowerShell HTTP trigger function processed a request.'
+    # Interact with query parameters or the body of the request.
+    $Username = $Request.Headers['x-ms-client-principal-name']
+
     try {
         $Table = Get-CIPPTable -TableName 'GraphPresets'
-        $Presets = Get-CIPPAzDataTableEntity @Table -Filter "Owner eq '$Username' or IsShared eq true"
+        $Presets = Get-CIPPAzDataTableEntity @Table -Filter "Owner eq '$Username' or IsShared eq true" | Sort-Object -Property name
         $Results = foreach ($Preset in $Presets) {
             [PSCustomObject]@{
                 id         = $Preset.Id
@@ -28,8 +29,13 @@ Function Invoke-ListGraphExplorerPresets {
                 params     = ConvertFrom-Json -InputObject $Preset.Params
             }
         }
+
+        if ($Request.Query.Endpoint) {
+            $Endpoint = $Request.Query.Endpoint -replace '^/', ''
+            $Results = $Results | Where-Object { ($_.params.endpoint -replace '^/', '') -eq $Endpoint }
+        }
     } catch {
-        $Presets = @()
+        $Results = @()
     }
     # Associate values to output bindings by calling 'Push-OutputBinding'.
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
@@ -37,7 +43,7 @@ Function Invoke-ListGraphExplorerPresets {
             Body       = @{
                 Results  = @($Results)
                 Metadata = @{
-                    Count = ($Presets | Measure-Object).Count
+                    Count = ($Results | Measure-Object).Count
                 }
             }
         })

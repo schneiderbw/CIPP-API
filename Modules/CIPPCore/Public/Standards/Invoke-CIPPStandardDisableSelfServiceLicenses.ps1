@@ -13,18 +13,19 @@ function Invoke-CIPPStandardDisableSelfServiceLicenses {
         CAT
             Entra (AAD) Standards
         TAG
-            "mediumimpact"
         ADDEDCOMPONENT
-            {"type":"input","name":"standards.DisableSelfServiceLicenses.Exclusions","label":"License Ids to exclude from this standard"}
+            {"type":"textField","name":"standards.DisableSelfServiceLicenses.Exclusions","label":"License Ids to exclude from this standard","required":false}
         IMPACT
             Medium Impact
+        ADDEDDATE
+            2021-11-16
         POWERSHELLEQUIVALENT
             Set-MsolCompanySettings -AllowAdHocSubscriptions \$false
         RECOMMENDEDBY
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/entra-aad-standards#medium-impact
     #>
 
     param($Tenant, $Settings)
@@ -89,7 +90,8 @@ function Invoke-CIPPStandardDisableSelfServiceLicenses {
         if (!$selfServiceItemsToAlert) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'All self-service licenses are disabled' -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'One or more self-service licenses are enabled' -sev Alert
+            Write-StandardsAlert -message "One or more self-service licenses are enabled" -object $selfServiceItemsToAlert -tenant $tenant -standardName 'DisableSelfServiceLicenses' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'One or more self-service licenses are enabled' -sev Info
         }
     }
 
