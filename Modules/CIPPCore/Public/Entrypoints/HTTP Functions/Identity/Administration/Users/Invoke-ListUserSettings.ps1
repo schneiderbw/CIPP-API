@@ -3,20 +3,22 @@ using namespace System.Net
 function Invoke-ListUserSettings {
     <#
     .FUNCTIONALITY
-        Entrypoint
+        Entrypoint,AnyTenant
     .ROLE
         Identity.User.Read
     #>
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
-    $username = ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($request.headers.'x-ms-client-principal')) | ConvertFrom-Json).userDetails
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
+
+    $Username = ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Headers.'x-ms-client-principal')) | ConvertFrom-Json).userDetails
 
     try {
         $Table = Get-CippTable -tablename 'UserSettings'
         $UserSettings = Get-CIPPAzDataTableEntity @Table -Filter "RowKey eq 'allUsers'"
-        if (!$UserSettings) { $userSettings = Get-CIPPAzDataTableEntity @Table -Filter "RowKey eq '$username'" }
+        if (!$UserSettings) { $UserSettings = Get-CIPPAzDataTableEntity @Table -Filter "RowKey eq '$Username'" }
         $UserSettings = $UserSettings.JSON | ConvertFrom-Json -Depth 10 -ErrorAction SilentlyContinue
         $StatusCode = [HttpStatusCode]::OK
         $Results = $UserSettings
