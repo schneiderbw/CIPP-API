@@ -4,7 +4,7 @@ function New-ExoRequest {
     Internal
     #>
     [CmdletBinding(DefaultParameterSetName = 'ExoRequest')]
-    Param(
+    param(
         [Parameter(Mandatory = $true, ParameterSetName = 'ExoRequest')]
         [string]$cmdlet,
 
@@ -31,7 +31,7 @@ function New-ExoRequest {
         [Parameter(ParameterSetName = 'AvailableCmdlets')]
         [switch]$AvailableCmdlets,
 
-        $ModuleVersion = '3.5.1',
+        $ModuleVersion = '3.7.1',
         [switch]$AsApp
     )
     if ((Get-AuthorisedRequest -TenantID $tenantid) -or $NoAuthCheck -eq $True) {
@@ -43,7 +43,7 @@ function New-ExoRequest {
         $token = Get-GraphToken -Tenantid $tenantid -scope "$Resource/.default" -AsApp:$AsApp.IsPresent
 
         if ($cmdParams) {
-            #if cmdparams is a pscustomobject, convert to hashtable, otherwise leave as is
+            #if cmdParams is a pscustomobject, convert to hashtable, otherwise leave as is
             $Params = $cmdParams
         } else {
             $Params = @{}
@@ -54,6 +54,7 @@ function New-ExoRequest {
                 Parameters = $Params
             }
         }
+        $ExoBody = Get-CIPPTextReplacement -TenantFilter $tenantid -Text $ExoBody
 
         $Tenant = Get-Tenants -IncludeErrors | Where-Object { $_.defaultDomainName -eq $tenantid -or $_.customerId -eq $tenantid }
         if (-not $Tenant -and $NoAuthCheck -eq $true) {
@@ -62,18 +63,14 @@ function New-ExoRequest {
             }
         }
         if (!$Anchor) {
-            if ($cmdparams.Identity) { $Anchor = $cmdparams.Identity }
-            if ($cmdparams.anr) { $Anchor = $cmdparams.anr }
-            if ($cmdparams.User) { $Anchor = $cmdparams.User }
-            if ($cmdparams.mailbox) { $Anchor = $cmdparams.mailbox }
-            if (!$Anchor -or $useSystemMailbox) {
-                if (!$Tenant.initialDomainName -or $Tenant.initialDomainName -notlike '*onmicrosoft.com*') {
-                    $OnMicrosoft = (New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/domains?$top=999' -tenantid $tenantid -NoAuthCheck $NoAuthCheck | Where-Object -Property isInitial -EQ $true).id
-                } else {
-                    $OnMicrosoft = $Tenant.initialDomainName
-                }
-                $anchor = "UPN:SystemMailbox{bb558c35-97f1-4cb9-8ff7-d53741dc928c}@$($OnMicrosoft)"
-                if ($cmdlet -in 'Set-AdminAuditLogConfig', 'Get-AdminAuditLogConfig', 'Enable-OrganizationCustomization', 'Get-OrganizationConfig', 'Set-OrganizationConfig') { $anchor = "UPN:SystemMailbox{8cc370d3-822a-4ab8-a926-bb94bd0641a9}@$($OnMicrosoft)" }
+            $MailboxGuid = 'bb558c35-97f1-4cb9-8ff7-d53741dc928c'
+            if ($cmdlet -in 'Set-AdminAuditLogConfig') {
+                $MailboxGuid = '8cc370d3-822a-4ab8-a926-bb94bd0641a9'
+            }
+            if ($Compliance.IsPresent) {
+                $Anchor = "UPN:SystemMailbox{$MailboxGuid}@$($tenant.initialDomainName)"
+            } else {
+                $anchor = "APP:SystemMailbox{$MailboxGuid}@$($tenant.customerId)"
             }
         }
         #if the anchor is a GUID, try looking up the user.
@@ -148,7 +145,7 @@ function New-ExoRequest {
                 } until ($null -eq $URL)
 
                 Write-Verbose ($ResponseHeaders | ConvertTo-Json)
-                if ($ReturnedData.'@adminapi.warnings' -and $ReturnedData.value -eq $null) {
+                if ($ReturnedData.'@adminapi.warnings' -and $null -eq $ReturnedData.value) {
                     $ReturnedData.value = $ReturnedData.'@adminapi.warnings'
                 }
             } catch {
