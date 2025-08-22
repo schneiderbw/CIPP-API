@@ -1,15 +1,20 @@
 using namespace System.Net
 
-Function Invoke-PublicPhishingCheck {
+function Invoke-PublicPhishingCheck {
     <#
     .FUNCTIONALITY
         Entrypoint
+    .ROLE
+        Public
     #>
     [CmdletBinding()]
 
     #this has been switched to the external free service by cyberdrain at clone.cipp.app due to extreme numbers of executions if selfhosted.
     param($Request, $TriggerMetadata)
-    if ($Request.body.Cloned) {
+
+    $Tenant = Get-Tenants -TenantFilter $Request.body.TenantId
+
+    if ($Request.body.Cloned -and $Tenant.customerId -eq $Request.body.TenantId) {
         Write-AlertMessage -message $Request.body.AlertMessage -sev 'Alert' -tenant $Request.body.TenantId
     }
 
