@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ExecAssignApp {
     <#
     .FUNCTIONALITY
@@ -10,17 +8,14 @@ Function Invoke-ExecAssignApp {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
 
-
-    # Write to the Azure Functions log stream.
-    Write-Host 'PowerShell HTTP trigger function processed a request.'
 
     # Interact with query parameters or the body of the request.
-    $tenantfilter = $Request.Query.TenantFilter
-    $appFilter = $Request.Query.ID
-    $AssignTo = $Request.Query.AssignTo
+    $TenantFilter = $Request.Query.tenantFilter ?? $Request.Body.tenantFilter
+    $appFilter = $Request.Query.ID ?? $Request.Body.ID
+    $AssignTo = $Request.Query.AssignTo ?? $Request.Body.AssignTo
     $AssignBody = switch ($AssignTo) {
 
         'AllUsers' {
@@ -42,20 +37,22 @@ Function Invoke-ExecAssignApp {
         }
 
     }
-    $body = [pscustomobject]@{'Results' = "$($TenantFilter): Assigned app to $assignTo" }
     try {
-        $GraphRequest = New-Graphpostrequest -uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appFilter/assign" -tenantid $TenantFilter -body $Assignbody
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($tenantfilter) -message "Assigned $($appFilter) to $assignTo" -Sev 'Info'
+        $null = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appFilter/assign" -tenantid $TenantFilter -body $AssignBody
+        $Result = "Successfully assigned app $($appFilter) to $($AssignTo)"
+        Write-LogMessage -headers $Headers -API $APIName -tenant $($TenantFilter) -message $Result -Sev Info
+        $StatusCode = [HttpStatusCode]::OK
 
     } catch {
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($tenantfilter) -message "Failed to assign app $($appFilter): $($_.Exception.Message)" -Sev 'Error'
-        $body = [pscustomobject]@{'Results' = "Failed to assign. $($_.Exception.Message)" }
+        $ErrorMessage = Get-CippException -Exception $_
+        $Result = "Failed to assign app $($appFilter) to $($AssignTo). Error: $($ErrorMessage.NormalizedError)"
+        Write-LogMessage -headers $Headers -API $APIName -tenant $TenantFilter -message $Result -Sev 'Error' -LogData $ErrorMessage
+        $StatusCode = [HttpStatusCode]::InternalServerError
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
-            Body       = $body
+    return ([HttpResponseContext]@{
+            StatusCode = $StatusCode
+            Body       = @{ Results = $Result }
         })
 
 }

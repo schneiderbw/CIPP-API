@@ -7,10 +7,6 @@ function Invoke-ExecDurableFunctions {
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
     param($Request, $TriggerMetadata)
-
-    $APIName = 'ExecDurableStats'
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
-
     # Collect info
     $StorageContext = New-AzStorageContext -ConnectionString $env:AzureWebJobsStorage
     $FunctionName = $env:WEBSITE_SITE_NAME
@@ -95,7 +91,7 @@ function Invoke-ExecDurableFunctions {
                     if ($PSCmdlet.ShouldProcess('Orchestrators', 'Mark Failed')) {
                         foreach ($Instance in $RunningInstances) {
                             $Instance.RuntimeStatus = 'Failed'
-                            Update-AzDataTableEntity @InstancesTable -Entity $Instance
+                            Update-AzDataTableEntity -Force @InstancesTable -Entity $Instance
                         }
                     }
                 }
@@ -110,19 +106,19 @@ function Invoke-ExecDurableFunctions {
                 }
                 if (($QueueEntities | Measure-Object).Count -gt 0) {
                     if ($PSCmdlet.ShouldProcess('Queues', 'Mark Failed')) {
-                        Update-AzDataTableEntity @QueueTable -Entity $QueueEntities
+                        Update-AzDataTableEntity -Force @QueueTable -Entity $QueueEntities
                     }
                 }
 
                 $CippQueueTasks = Get-CippTable -TableName 'CippQueueTasks'
-                $RunningTasks = Get-CIPPAzDataTableEntity @CippQueueTasks -Filter "Status eq 'Running'" -Property RowKey, PartitionKey, Status
+                $RunningTasks = Get-CIPPAzDataTableEntity @CippQueueTasks -Filter "PartitionKey eq 'Task' and Status eq 'Running'" -Property RowKey, PartitionKey, Status
                 if (($RunningTasks | Measure-Object).Count -gt 0) {
                     if ($PSCmdlet.ShouldProcess('Tasks', 'Mark Failed')) {
                         $UpdatedTasks = foreach ($Task in $RunningTasks) {
                             $Task.Status = 'Failed'
                             $Task
                         }
-                        Update-AzDataTableEntity @CippQueueTasks -Entity $UpdatedTasks
+                        Update-AzDataTableEntity -Force @CippQueueTasks -Entity $UpdatedTasks
                     }
                 }
 
@@ -169,7 +165,7 @@ function Invoke-ExecDurableFunctions {
         }
     }
 
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = $Body
         })

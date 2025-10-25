@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ExecAssignPolicy {
     <#
     .FUNCTIONALITY
@@ -10,32 +8,46 @@ Function Invoke-ExecAssignPolicy {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+    Write-LogMessage -headers $Request.Headers -API $APINAME -message 'Accessed this API' -Sev 'Debug'
 
-    $Tenant = $request.query.tenantfilter
-    $ID = $request.query.id
-    $displayname = $request.query.Displayname
-    $AssignTo = if ($request.query.Assignto -ne 'on') { $request.query.Assignto }
+    # Interact with the body of the request
+    $TenantFilter = $Request.Body.tenantFilter
+    $ID = $request.Body.ID
+    $Type = $Request.Body.Type
+    $AssignTo = $Request.Body.AssignTo
+
+    $AssignTo = if ($AssignTo -ne 'on') { $AssignTo }
 
     $results = try {
         if ($AssignTo) {
-            $assign = Set-CIPPAssignedPolicy -PolicyId $ID -TenantFilter $tenant -GroupName $AssignTo -Type $Request.query.Type
-            Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($Tenant) -message "Assigned policy $($Displayname) to $AssignTo" -Sev 'Info'
+            $AssignmentResult = Set-CIPPAssignedPolicy -PolicyId $ID -TenantFilter $TenantFilter -GroupName $AssignTo -Type $Type -Headers $Headers
+            if ($AssignmentResult) {
+                # Check if it's a warning message (no groups found)
+                if ($AssignmentResult -like "*No groups found*") {
+                    $StatusCode = [HttpStatusCode]::BadRequest
+                } else {
+                    $StatusCode = [HttpStatusCode]::OK
+                }
+                $AssignmentResult
+            } else {
+                $StatusCode = [HttpStatusCode]::OK
+                "Successfully edited policy for $($TenantFilter)"
+            }
+        } else {
+            $StatusCode = [HttpStatusCode]::OK
+            "Successfully edited policy for $($TenantFilter)"
         }
-        "Successfully edited policy for $($Tenant)"
     } catch {
-        "Failed to add policy for $($Tenant): $($_.Exception.Message)"
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($Tenant) -message "Failed editing policy $($Displayname). Error:$($_.Exception.Message)" -Sev 'Error'
-        continue
+        $StatusCode = [HttpStatusCode]::InternalServerError
+        "Failed to add policy for $($TenantFilter): $($_.Exception.Message)"
     }
 
-    $body = [pscustomobject]@{'Results' = $results }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
-            Body       = $body
+    return ([HttpResponseContext]@{
+            StatusCode = $StatusCode
+            Body       = @{Results = $results }
         })
 
 }
