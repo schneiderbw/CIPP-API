@@ -13,25 +13,34 @@ function Invoke-CIPPStandardSafeSendersDisable {
         CAT
             Exchange Standards
         TAG
-            "mediumimpact"
+        EXECUTIVETEXT
+            Removes user-defined safe sender lists to prevent security bypasses where malicious emails could avoid spam filtering. This ensures all emails go through proper security screening, even if users have previously marked senders as 'safe', improving overall email security.
         ADDEDCOMPONENT
         DISABLEDFEATURES
-
+            {"report":true,"warn":true,"remediate":false}
         IMPACT
             Medium Impact
+        ADDEDDATE
+            2023-10-26
         POWERSHELLEQUIVALENT
             Set-MailboxJunkEmailConfiguration
         RECOMMENDEDBY
+            "CIPP"
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'SafeSendersDisable'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'SafeSendersDisable' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
 
-    If ($Settings.remediate -eq $true) {
+    if ($TestResult -eq $false) {
+        Write-Host "We're exiting as the correct license is not present for this standard."
+        return $true
+    } #we're done.
+
+    if ($Settings.remediate -eq $true) {
         try {
             $Mailboxes = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-Mailbox' -select 'UserPrincipalName'
             $Request = $Mailboxes | ForEach-Object {
@@ -59,6 +68,11 @@ function Invoke-CIPPStandardSafeSendersDisable {
             $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
             Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to disable SafeSenders. Error: $ErrorMessage" -sev Error
         }
+    }
+
+    if ($Settings.report -eq $true) {
+        #This script always returns true, as it only disables the Safe Senders list
+        Set-CIPPStandardsCompareField -FieldName 'standards.SafeSendersDisable' -FieldValue $true -Tenant $Tenant
     }
 
 }
