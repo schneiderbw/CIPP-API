@@ -33,6 +33,9 @@ function Get-GraphRequestList {
     .PARAMETER NoPagination
     Disable pagination
 
+    .PARAMETER ManualPagination
+    Enable manual pagination using nextLink
+
     .PARAMETER CountOnly
     Only return count of results
 
@@ -45,9 +48,18 @@ function Get-GraphRequestList {
     .PARAMETER ReverseTenantLookupProperty
     Property to perform reverse tenant lookup
 
+    .PARAMETER AsApp
+    Run the request as an application
+
+    .PARAMETER Caller
+    Name of the calling function
+
+    .PARAMETER UseBatchExpand
+    Perform a batch lookup using the $expand query parameter to avoid 20 item max
+
     #>
     [CmdletBinding()]
-    Param(
+    param(
         [string]$TenantFilter = $env:TenantID,
         [Parameter(Mandatory = $true)]
         [string]$Endpoint,
@@ -61,17 +73,19 @@ function Get-GraphRequestList {
         [switch]$SkipCache,
         [switch]$ClearCache,
         [switch]$NoPagination,
+        [switch]$ManualPagination,
         [switch]$CountOnly,
         [switch]$NoAuthCheck,
         [switch]$ReverseTenantLookup,
         [string]$ReverseTenantLookupProperty = 'tenantId',
-        [boolean]$AsApp = $false
+        [boolean]$AsApp = $false,
+        [string]$Caller = 'Get-GraphRequestList',
+        [switch]$UseBatchExpand
     )
 
     $SingleTenantThreshold = 8000
-
+    Write-Information "Tenant: $TenantFilter"
     $TableName = ('cache{0}' -f ($Endpoint -replace '[^A-Za-z0-9]'))[0..62] -join ''
-    Write-Information "Table: $TableName"
     $Endpoint = $Endpoint -replace '^/', ''
     $DisplayName = ($Endpoint -split '/')[0]
 
@@ -89,13 +103,25 @@ function Get-GraphRequestList {
             $Item.Value = $Item.Value.ToString().ToLower()
         }
         if ($Item.Value) {
-            $ParamCollection.Add($Item.Key, $Item.Value)
+            if ($Item.Key -eq '$select' -or $Item.Key -eq 'select') {
+                $Columns = $Item.Value -split ','
+                $ActualCols = foreach ($Col in $Columns) {
+                    $Col -split '\.' | Select-Object -First 1
+                }
+                $Value = ($ActualCols | Sort-Object -Unique) -join ','
+            } else {
+                $Value = $Item.Value
+            }
+
+            if ($UseBatchExpand.IsPresent -and ($Item.Key -eq '$expand' -or $Item.Key -eq 'expand')) {
+                $BatchExpandQuery = $Item.Value
+            } else {
+                $ParamCollection.Add($Item.Key, $Value)
+            }
         }
     }
     $GraphQuery.Query = $ParamCollection.ToString()
-    $PartitionKey = Get-StringHash -String (@($Endpoint, $ParamCollection.ToString()) -join '-')
-    Write-Information "PK: $PartitionKey"
-    Write-Information ( 'GET [ {0} ]' -f $GraphQuery.ToString())
+    $PartitionKey = Get-StringHash -String (@($Endpoint, $ParamCollection.ToString(), 'v2') -join '-')
 
     # Perform $count check before caching
     $Count = 0
@@ -105,8 +131,8 @@ function Get-GraphRequestList {
             tenantid      = $TenantFilter
             ComplexFilter = $true
         }
-        if ($NoPagination.IsPresent) {
-            $GraphRequest.noPagination = $NoPagination.IsPresent
+        if ($NoPagination.IsPresent -or $ManualPagination.IsPresent) {
+            $GraphRequest.noPagination = $true
         }
         if ($CountOnly.IsPresent) {
             $GraphRequest.CountOnly = $CountOnly.IsPresent
@@ -117,12 +143,36 @@ function Get-GraphRequestList {
         if ($AsApp) {
             $GraphRequest.asApp = $AsApp
         }
+
+        if ($Endpoint -match '%' -or $Parameters.Values -match '%') {
+            $TenantId = (Get-Tenants -IncludeErrors | Where-Object { $_.defaultDomainName -eq $TenantFilter -or $_.customerId -eq $TenantFilter }).customerId
+            $Endpoint = Get-CIPPTextReplacement -TenantFilter $TenantFilter -Text $Endpoint
+            $GraphQuery = [System.UriBuilder]('https://graph.microsoft.com/{0}/{1}' -f $Version, $Endpoint)
+            $ParamCollection = [System.Web.HttpUtility]::ParseQueryString([String]::Empty)
+            foreach ($Item in ($Parameters.GetEnumerator() | Sort-Object -CaseSensitive -Property Key)) {
+                if ($Item.Key -eq '$select' -or $Item.Key -eq 'select') {
+                    $Columns = $Item.Value -split ','
+                    $ActualCols = foreach ($Col in $Columns) {
+                        $Col -split '\.' | Select-Object -First 1
+                    }
+                    $Value = ($ActualCols | Sort-Object -Unique) -join ','
+                } else {
+                    $Value = $Item.Value
+                }
+                $Value = Get-CIPPTextReplacement -TenantFilter $TenantFilter -Text $Value
+                $ParamCollection.Add($Item.Key, $Value)
+            }
+            $GraphQuery.Query = $ParamCollection.ToString()
+            $GraphRequest.uri = $GraphQuery.ToString()
+        }
+
         if ($Parameters.'$count' -and !$SkipCache.IsPresent -and !$NoPagination.IsPresent) {
             $Count = New-GraphGetRequest @GraphRequest -CountOnly -ErrorAction Stop
             if ($CountOnly.IsPresent) { return $Count }
             Write-Information "Total results (`$count): $Count"
         }
     }
+    #Write-Information ( 'GET [ {0} ]' -f $GraphQuery.ToString())
 
     try {
         if ($QueueId) {
@@ -132,38 +182,26 @@ function Get-GraphRequestList {
             $Type = 'Queue'
             Write-Information "Cached: $(($Rows | Measure-Object).Count) rows (Type: $($Type))"
             $QueueReference = '{0}-{1}' -f $TenantFilter, $PartitionKey
-            $RunningQueue = Invoke-ListCippQueue | Where-Object { $_.Reference -eq $QueueReference -and $_.Status -ne 'Completed' -and $_.Status -ne 'Failed' }
+            $RunningQueue = Invoke-ListCippQueue -Reference $QueueReference | Where-Object { $_.Status -ne 'Completed' -and $_.Status -ne 'Failed' }
         } elseif (!$SkipCache.IsPresent -and !$ClearCache.IsPresent -and !$CountOnly.IsPresent) {
             if ($TenantFilter -eq 'AllTenants' -or $Count -gt $SingleTenantThreshold) {
                 $Table = Get-CIPPTable -TableName $TableName
                 $Timestamp = (Get-Date).AddHours(-1).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffK')
                 if ($TenantFilter -eq 'AllTenants') {
-                    $Filter = "PartitionKey eq '{0}' and QueueType eq 'AllTenants' and Timestamp ge datetime'{1}'" -f $PartitionKey, $Timestamp
+                    $Filter = "PartitionKey eq '{0}' and Timestamp ge datetime'{1}'" -f $PartitionKey, $Timestamp
                 } else {
-                    $Filter = "PartitionKey eq '{0}' and Tenant eq '{1}' and Timestamp ge datetime'{2}'" -f $PartitionKey, $TenantFilter, $Timestamp
+                    $Filter = "PartitionKey eq '{0}' and (RowKey eq '{1}' or OriginalEntityId eq '{1}') and Timestamp ge datetime'{2}'" -f $PartitionKey, $TenantFilter, $Timestamp
                 }
-                $Rows = Get-CIPPAzDataTableEntity @Table -Filter $Filter
+                $Tenants = Get-Tenants -IncludeErrors
+                $Rows = Get-CIPPAzDataTableEntity @Table -Filter $Filter | Where-Object { $_.OriginalEntityId -in $Tenants.defaultDomainName -or $_.RowKey -in $Tenants.defaultDomainName }
                 $Type = 'Cache'
-                Write-Information "Cached: $(($Rows | Measure-Object).Count) rows (Type: $($Type))"
+                Write-Information "Table: $TableName | PK: $PartitionKey | Cached: $(($Rows | Measure-Object).Count) rows (Type: $($Type))"
                 $QueueReference = '{0}-{1}' -f $TenantFilter, $PartitionKey
-                $RunningQueue = Invoke-ListCippQueue | Where-Object { $_.Reference -eq $QueueReference -and $_.Status -ne 'Completed' -and $_.Status -ne 'Failed' }
+                $RunningQueue = Invoke-ListCippQueue -Reference $QueueReference | Where-Object { $_.Status -notmatch 'Completed' -and $_.Status -notmatch 'Failed' }
             }
         }
     } catch {
         Write-Information $_.InvocationInfo.PositionMessage
-    }
-
-    if ($TenantFilter -ne 'AllTenants' -and $Endpoint -match '%tenantid%') {
-        Write-Information "Replacing TenantId in endpoint with $TenantFilter"
-        $TenantId = (Get-Tenants -IncludeErrors | Where-Object { $_.defaultDomainName -eq $TenantFilter -or $_.customerId -eq $TenantFilter }).customerId
-        $Endpoint = $Endpoint -replace '%tenantid%', $TenantId
-        $GraphQuery = [System.UriBuilder]('https://graph.microsoft.com/{0}/{1}' -f $Version, $Endpoint)
-        $ParamCollection = [System.Web.HttpUtility]::ParseQueryString([String]::Empty)
-        foreach ($Item in ($Parameters.GetEnumerator() | Sort-Object -CaseSensitive -Property Key)) {
-            $ParamCollection.Add($Item.Key, $Item.Value)
-        }
-        $GraphQuery.Query = $ParamCollection.ToString()
-        $GraphRequest.uri = $GraphQuery.ToString()
     }
 
     if (!$Rows) {
@@ -178,7 +216,7 @@ function Get-GraphRequestList {
                             TenantFilter                = $_.defaultDomainName
                             Endpoint                    = $using:Endpoint
                             Parameters                  = $using:Parameters
-                            NoPagination                = $using:NoPagination.IsPresent
+                            NoPagination                = $false
                             ReverseTenantLookupProperty = $using:ReverseTenantLookupProperty
                             ReverseTenantLookup         = $using:ReverseTenantLookup.IsPresent
                             NoAuthCheck                 = $using:NoAuthCheck.IsPresent
@@ -252,7 +290,7 @@ function Get-GraphRequestList {
                 try {
                     $QueueThresholdExceeded = $false
 
-                    if ($Parameters.'$count' -and !$SkipCache -and !$NoPagination) {
+                    if ($Parameters.'$count' -and !$SkipCache -and !$NoPagination.IsPresent -and !$ManualPagination.IsPresent) {
                         if ($Count -gt $singleTenantThreshold) {
                             $QueueThresholdExceeded = $true
                             if ($RunningQueue) {
@@ -296,10 +334,54 @@ function Get-GraphRequestList {
 
                     if (!$QueueThresholdExceeded) {
                         #nextLink should ONLY be used in direct calls with manual pagination. It should not be used in queueing
-                        if ($NoPagination.IsPresent -and $nextLink -match '^https://.+') { $GraphRequest.uri = $nextLink }
+                        if ($ManualPagination.IsPresent -and $nextLink -match '^https://.+') { $GraphRequest.uri = $nextLink }
 
-                        $GraphRequestResults = New-GraphGetRequest @GraphRequest -Caller 'Get-GraphRequestList' -ErrorAction Stop
+                        $GraphRequestResults = New-GraphGetRequest @GraphRequest -Caller $Caller -ErrorAction Stop
                         $GraphRequestResults = $GraphRequestResults | Select-Object *, @{n = 'Tenant'; e = { $TenantFilter } }, @{n = 'CippStatus'; e = { 'Good' } }
+
+                        if ($UseBatchExpand.IsPresent -and ![string]::IsNullOrEmpty($BatchExpandQuery)) {
+                            if ($BatchExpandQuery -match '' -and ![string]::IsNullOrEmpty($GraphRequestResults.id)) {
+                                # Convert $expand format to actual batch query e.g. members($select=id,displayName) to members?$select=id,displayName
+                                $BatchExpandQuery = $BatchExpandQuery -replace '\(\$?([^=]+)=([^)]+)\)', '?$$$1=$2' -replace ';', '&'
+
+                                # Extract property name from expand
+                                $Property = $BatchExpandQuery -replace '\?.*$', '' -replace '^.*\/', ''
+                                Write-Information "Performing batch expansion for property '$Property'..."
+
+                                if ($Property -eq 'assignedLicenses') {
+                                    $LicenseDetails = Get-CIPPLicenseOverview -TenantFilter $TenantFilter
+                                    $GraphRequestResults = foreach ($GraphRequestResult in $GraphRequestResults) {
+                                        $NewLicenses = [system.collections.generic.list[string]]::new()
+                                        foreach ($License in $GraphRequestResult.assignedLicenses) {
+                                            $LicenseInfo = $LicenseDetails | Where-Object { $_.skuId -eq $License.skuId } | Select-Object -First 1
+                                            if ($LicenseInfo) {
+                                                $NewLicenses.Add($LicenseInfo.License)
+                                            }
+                                        }
+                                        $GraphRequestResult | Add-Member -MemberType NoteProperty -Name $Property -Value @($NewLicenses) -Force
+                                        $GraphRequestResult
+                                    }
+                                } else {
+
+                                    $Uri = "$Endpoint/{0}/$BatchExpandQuery"
+
+                                    $Requests = foreach ($Result in $GraphRequestResults) {
+                                        @{
+                                            id     = $Result.id
+                                            url    = $Uri -f $Result.id
+                                            method = 'GET'
+                                        }
+                                    }
+                                    $BatchResults = New-GraphBulkRequest -Requests @($Requests) -tenantid $TenantFilter -NoAuthCheck $NoAuthCheck.IsPresent -asapp $AsApp
+
+                                    $GraphRequestResults = foreach ($Result in $GraphRequestResults) {
+                                        $PropValue = $BatchResults | Where-Object { $_.id -eq $Result.id } | Select-Object -ExpandProperty body
+                                        $Result | Add-Member -MemberType NoteProperty -Name $Property -Value ($PropValue.value ?? $PropValue)
+                                        $Result
+                                    }
+                                }
+                            }
+                        }
 
                         if ($ReverseTenantLookup -and $GraphRequestResults) {
                             $ReverseLookupRequests = $GraphRequestResults.$ReverseTenantLookupProperty | Sort-Object -Unique | ForEach-Object {
@@ -325,8 +407,16 @@ function Get-GraphRequestList {
             }
         }
     } else {
-        $Rows | ForEach-Object {
-            $_.Data | ConvertFrom-Json
+        foreach ($Row in $Rows) {
+            if ($Row.Data) {
+                try {
+                    $Row.Data | ConvertFrom-Json -ErrorAction Stop
+                } catch {
+                    Write-Warning "Could not convert data to JSON: $($_.Exception.Message)"
+                    #Write-Information ($Row | ConvertTo-Json)
+                    continue
+                }
+            }
         }
     }
 }

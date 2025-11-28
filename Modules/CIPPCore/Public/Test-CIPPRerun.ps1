@@ -5,8 +5,9 @@ function Test-CIPPRerun {
         $Type,
         $API,
         $Settings,
-        $ExecutingUser,
-        [switch]$Clear
+        $Headers,
+        [switch]$Clear,
+        [switch]$ClearAll
     )
     $RerunTable = Get-CIPPTable -tablename 'RerunCache'
     $EstimatedDifference = switch ($Type) {
@@ -18,7 +19,16 @@ function Test-CIPPRerun {
     $EstimatedNextRun = $CurrentUnixTime + $EstimatedDifference
 
     try {
-        $RerunData = Get-CIPPAzDataTableEntity @RerunTable -filter "PartitionKey eq '$($TenantFilter)' and RowKey eq '$($Type)_$($API)'"
+        $RerunData = Get-CIPPAzDataTableEntity @RerunTable -filter "PartitionKey eq '$($TenantFilter)'" | Where-Object { $_.RowKey -match "^$($Type)_$($API)" }
+        if ($ClearAll.IsPresent) {
+            $AllRerunData = Get-CIPPAzDataTableEntity @RerunTable
+            if ($AllRerunData) {
+                Write-Information "Clearing all rerun cache entries for $($Type)_$($API)"
+                Remove-AzDataTableEntity @RerunTable -Entity $AllRerunData -Force
+            }
+            return $false
+        }
+
         if ($Clear.IsPresent) {
             if ($RerunData) {
                 Remove-AzDataTableEntity @RerunTable -Entity $RerunData
@@ -38,7 +48,7 @@ function Test-CIPPRerun {
                 }
             }
             if ($RerunData.EstimatedNextRun -gt $CurrentUnixTime) {
-                Write-LogMessage -message "Standard rerun detected for $($API). Prevented from running again." -tenant $TenantFilter -user $ExecutingUser -Sev 'Info'
+                Write-LogMessage -API $API -message "Standard rerun detected for $($API). Prevented from running again." -tenant $TenantFilter -headers $Headers -Sev 'Info'
                 return $true
             } else {
                 $RerunData.EstimatedNextRun = $EstimatedNextRun
@@ -60,7 +70,7 @@ function Test-CIPPRerun {
     } catch {
         $ErrorMessage = Get-CippException -Exception $_
         Write-Host "Could not detect if this is a rerun: $($ErrorMessage.NormalizedError)"
-        Write-LogMessage -user $ExecutingUser -API $API -message "Could not detect if this is a rerun: $($ErrorMessage.NormalizedError)" -Sev 'Error' -LogData $ErrorMessage
+        Write-LogMessage -headers $Headers -API $API -message "Could not detect if this is a rerun: $($ErrorMessage.NormalizedError)" -Sev 'Error' -LogData (Get-CippException -Exception $_)
         return $false
     }
 }
