@@ -1,10 +1,10 @@
 function Set-CIPPSPOTenant {
     <#
     .SYNOPSIS
-    Set Sharepoint Tenant properties
+    Set SharePoint Tenant properties
 
     .DESCRIPTION
-    Set Sharepoint Tenant properties via SPO API
+    Set SharePoint Tenant properties via SPO API
 
     .PARAMETER TenantFilter
     Tenant to apply settings to
@@ -29,7 +29,7 @@ function Set-CIPPSPOTenant {
 
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
-    Param(
+    param(
         [Parameter(ValueFromPipelineByPropertyName = $true, Mandatory = $true)]
         [string]$TenantFilter,
         [Parameter(ValueFromPipelineByPropertyName = $true, Mandatory = $true)]
@@ -44,12 +44,13 @@ function Set-CIPPSPOTenant {
     process {
         if (!$SharepointPrefix) {
             # get sharepoint admin site
-            $tenantName = (New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/sites/root' -asApp $true -tenantid $TenantFilter).id.Split('.')[0]
+            $SharePointInfo = Get-SharePointAdminLink -Public $false -tenantFilter $TenantFilter
+            $AdminUrl = $SharePointInfo.AdminUrl
         } else {
             $tenantName = $SharepointPrefix
+            $AdminUrl = "https://$($tenantName)-admin.sharepoint.com"
         }
         $Identity = $Identity -replace "`n", '&#xA;'
-        $AdminUrl = "https://$($tenantName)-admin.sharepoint.com"
         $AllowedTypes = @('Boolean', 'String', 'Int32')
         $SetProperty = [System.Collections.Generic.List[string]]::new()
         $x = 114
@@ -64,7 +65,7 @@ function Set-CIPPSPOTenant {
                 }
                 $xml = @"
     <SetProperty Id="$x" ObjectPathId="110" Name="$Property">
-        <Parameter Type="Boolean">$($PropertyToSet)</Parameter>
+        <Parameter Type="$PropertyType">$($PropertyToSet)</Parameter>
     </SetProperty>
 "@
                 $SetProperty.Add($xml)

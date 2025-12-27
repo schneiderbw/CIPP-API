@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ExecAddTrustedIP {
+function Invoke-ExecAddTrustedIP {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -11,14 +9,15 @@ Function Invoke-ExecAddTrustedIP {
     param($Request, $TriggerMetadata)
 
     $Table = Get-CippTable -tablename 'trustedIps'
-    Add-CIPPAzDataTableEntity @Table -Entity @{
-        PartitionKey = $request.query.tenantfilter
-        RowKey       = $Request.query.ip
-        state        = $request.query.State
-    } -Force
-
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    foreach ($IP in $Request.body.IP) {
+        Add-CIPPAzDataTableEntity @Table -Entity @{
+            PartitionKey = $Request.Body.tenantfilter
+            RowKey       = $IP
+            state        = $Request.Body.State
+        } -Force
+    }
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
-            Body       = @{ results = "Added $($Request.query.ip) to database with state $($Request.query.state) for $($Request.query.tenantfilter)" }
+            Body       = @{ results = "Added $($Request.Body.IP) to database with state $($Request.Body.State) for $($Request.Body.tenantfilter)" }
         })
 }

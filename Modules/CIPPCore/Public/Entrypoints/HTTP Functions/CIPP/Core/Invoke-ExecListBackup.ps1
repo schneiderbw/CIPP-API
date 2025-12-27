@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ExecListBackup {
+function Invoke-ExecListBackup {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -9,16 +7,41 @@ Function Invoke-ExecListBackup {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
+    $Type = $Request.Query.Type
+    $TenantFilter = $Request.Query.tenantFilter
+    $NameOnly = $Request.Query.NameOnly
+    $BackupName = $Request.Query.BackupName
 
-    $Result = Get-CIPPBackup -type $Request.query.Type -TenantFilter $Request.query.TenantFilter
-    if ($request.query.NameOnly) {
-        $Result = $Result | Select-Object RowKey, timestamp
+    $CippBackupParams = @{}
+    if ($Type) { $CippBackupParams.Type = $Type }
+    if ($TenantFilter) { $CippBackupParams.TenantFilter = $TenantFilter }
+    if ($BackupName) { $CippBackupParams.Name = $BackupName }
+
+    $Result = Get-CIPPBackup @CippBackupParams
+
+    if ($NameOnly) {
+        $Processed = foreach ($item in $Result) {
+            $properties = $item.PSObject.Properties | Where-Object { $_.Name -notin @('TenantFilter', 'ETag', 'PartitionKey', 'RowKey', 'Timestamp', 'OriginalEntityId', 'SplitOverProps', 'PartIndex') -and $_.Value }
+
+            if ($Type -eq 'Scheduled') {
+                [PSCustomObject]@{
+                    TenantFilter = $item.RowKey -match '^(.*?)_' | ForEach-Object { $matches[1] }
+                    BackupName   = $item.RowKey
+                    Timestamp    = $item.Timestamp
+                    Items        = $properties.Name
+                }
+            } else {
+                [PSCustomObject]@{
+                    BackupName = $item.RowKey
+                    Timestamp  = $item.Timestamp
+                }
+
+            }
+        }
+        $Result = $Processed | Sort-Object Timestamp -Descending
     }
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API 'Alerts' -message $request.body.text -Sev $request.body.Severity
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = @($Result)
         })
-
 }

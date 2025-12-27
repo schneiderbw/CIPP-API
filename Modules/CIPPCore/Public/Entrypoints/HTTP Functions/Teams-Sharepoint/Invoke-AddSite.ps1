@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-AddSite {
+function Invoke-AddSite {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -9,25 +7,25 @@ Function Invoke-AddSite {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
+    $Headers = $Request.Headers
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
 
-    $SharePointObj = $Request.body
+
+    # Interact with query parameters or the body of the request.
+    $TenantFilter = $Request.Body.tenantFilter
+    $SharePointObj = $Request.Body
 
     try {
-        $SharePointSite = New-CIPPSharepointSite -SiteName $SharePointObj.siteName -SiteDescription $SharePointObj.siteDescription -SiteOwner $SharePointObj.siteOwner.value -TemplateName $SharePointObj.templateName.value -SiteDesign $SharePointObj.siteDesign.value -SensitivityLabel $SharePointObj.sensitivityLabel -TenantFilter $SharePointObj.tenantFilter
-        $body = [pscustomobject]@{'Results' = $SharePointSite }
+        $Result = New-CIPPSharepointSite -Headers $Headers -SiteName $SharePointObj.siteName -SiteDescription $SharePointObj.siteDescription -SiteOwner $SharePointObj.siteOwner.value -TemplateName $SharePointObj.templateName.value -SiteDesign $SharePointObj.siteDesign.value -SensitivityLabel $SharePointObj.sensitivityLabel -TenantFilter $TenantFilter
+        $StatusCode = [HttpStatusCode]::OK
     } catch {
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($userobj.tenantid) -message "Adding SharePoint Site failed. Error: $($_.Exception.Message)" -Sev 'Error'
-        $body = [pscustomobject]@{'Results' = "Failed. Error message: $($_.Exception.Message)" }
+        $StatusCode = [HttpStatusCode]::InternalServerError
+        $Result = $_.Exception.Message
     }
 
-
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
-            Body       = $Body
+    return ([HttpResponseContext]@{
+            StatusCode = $StatusCode
+            Body       = @{'Results' = $Result }
         })
 
 }

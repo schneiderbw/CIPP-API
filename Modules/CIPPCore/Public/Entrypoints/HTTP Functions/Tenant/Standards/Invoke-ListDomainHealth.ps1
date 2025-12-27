@@ -1,15 +1,14 @@
-using namespace System.Net
-
-Function Invoke-ListDomainHealth {
+function Invoke-ListDomainHealth {
     <#
     .FUNCTIONALITY
-        Entrypoint
+        Entrypoint,AnyTenant
     .ROLE
         Tenant.DomainAnalyser.Read
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
+    $APIName = $Request.Params.CIPPEndpoint
     Import-Module DNSHealth
 
     try {
@@ -35,13 +34,10 @@ Function Invoke-ListDomainHealth {
 
     Set-DnsResolver -Resolver $Resolver
 
-    $UserCreds = ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($request.headers.'x-ms-client-principal')) | ConvertFrom-Json)
+    $UserRoles = Get-CIPPAccessRole -Request $Request
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
 
-    # Write to the Azure Functions log stream.
-    Write-Host 'PowerShell HTTP trigger function processed a request.'
 
     $StatusCode = [HttpStatusCode]::OK
     try {
@@ -83,7 +79,7 @@ Function Invoke-ListDomainHealth {
                         if ($Request.Query.Selector) {
                             $DkimQuery.Selectors = ($Request.Query.Selector).trim() -split '\s*,\s*'
 
-                            if ('admin' -in $UserCreds.userRoles -or 'editor' -in $UserCreds.userRoles) {
+                            if ('admin' -in $UserRoles -or 'editor' -in $UserRoles) {
                                 $DkimSelectors = [string]($DkimQuery.Selectors | ConvertTo-Json -Compress)
                                 if ($DomainInfo) {
                                     $DomainInfo.DkimSelectors = $DkimSelectors
@@ -143,13 +139,12 @@ Function Invoke-ListDomainHealth {
             }
         }
     } catch {
-        Write-LogMessage -API $APINAME -tenant $($name) -user $request.headers.'x-ms-client-principal' -message "DNS Helper API failed. $($_.Exception.Message)" -Sev 'Error'
+        Write-LogMessage -API $APINAME -tenant $($name) -headers $Request.Headers -message "DNS Helper API failed. $($_.Exception.Message)" -Sev 'Error'
         $body = [pscustomobject]@{'Results' = "Failed. $($_.Exception.Message)" }
         $StatusCode = [HttpStatusCode]::InternalServerError
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = $body
         })
