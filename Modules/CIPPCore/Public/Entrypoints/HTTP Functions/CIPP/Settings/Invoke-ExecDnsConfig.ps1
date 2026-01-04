@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ExecDnsConfig {
     <#
     .FUNCTIONALITY
@@ -10,9 +8,7 @@ Function Invoke-ExecDnsConfig {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
-
+    $APIName = $Request.Params.CIPPEndpoint
     # List of supported resolvers
     $ValidResolvers = @(
         'Google'
@@ -20,8 +16,7 @@ Function Invoke-ExecDnsConfig {
         'Quad9'
     )
 
-    # Write to the Azure Functions log stream.
-    Write-Host 'PowerShell HTTP trigger function processed a request.'
+
 
     $StatusCode = [HttpStatusCode]::OK
     try {
@@ -44,8 +39,8 @@ Function Invoke-ExecDnsConfig {
 
         switch ($Request.Query.Action) {
             'SetConfig' {
-                if ($Request.Query.Resolver) {
-                    $Resolver = $Request.Query.Resolver
+                if ($Request.Body.Resolver) {
+                    $Resolver = $Request.Body.Resolver
                     if ($ValidResolvers -contains $Resolver) {
                         try {
                             $Config.Resolver = $Resolver
@@ -59,7 +54,7 @@ Function Invoke-ExecDnsConfig {
                 }
                 if ($updated) {
                     Add-CIPPAzDataTableEntity @ConfigTable -Entity $Config -Force
-                    Write-LogMessage -API $APINAME -tenant 'Global' -user $request.headers.'x-ms-client-principal' -message 'DNS configuration updated' -Sev 'Info'
+                    Write-LogMessage -API $APINAME -tenant 'Global' -headers $Request.Headers -message 'DNS configuration updated' -Sev 'Info'
                     $body = [pscustomobject]@{'Results' = 'Success: DNS configuration updated.' }
                 } else {
                     $StatusCode = [HttpStatusCode]::BadRequest
@@ -90,24 +85,23 @@ Function Invoke-ExecDnsConfig {
             }
             'GetConfig' {
                 $body = [pscustomobject]$Config
-                Write-LogMessage -API $APINAME -tenant 'Global' -user $request.headers.'x-ms-client-principal' -message 'Retrieved DNS configuration' -Sev 'Debug'
+                Write-LogMessage -API $APINAME -tenant 'Global' -headers $Request.Headers -message 'Retrieved DNS configuration' -Sev 'Debug'
             }
             'RemoveDomain' {
                 $Filter = "RowKey eq '{0}'" -f $Request.Query.Domain
                 $DomainRow = Get-CIPPAzDataTableEntity @DomainTable -Filter $Filter -Property PartitionKey, RowKey
                 Remove-AzDataTableEntity -Force @DomainTable -Entity $DomainRow
-                Write-LogMessage -API $APINAME -tenant 'Global' -user $request.headers.'x-ms-client-principal' -message "Removed Domain - $($Request.Query.Domain) " -Sev 'Info'
+                Write-LogMessage -API $APINAME -tenant 'Global' -headers $Request.Headers -message "Removed Domain - $($Request.Query.Domain) " -Sev 'Info'
                 $body = [pscustomobject]@{ 'Results' = "Domain removed - $($Request.Query.Domain)" }
             }
         }
     } catch {
-        Write-LogMessage -API $APINAME -tenant $($name) -user $request.headers.'x-ms-client-principal' -message "DNS Config API failed. $($_.Exception.Message)" -Sev 'Error'
+        Write-LogMessage -API $APINAME -tenant $($name) -headers $Request.Headers -message "DNS Config API failed. $($_.Exception.Message)" -Sev 'Error'
         $body = [pscustomobject]@{'Results' = "Failed. $($_.Exception.Message)" }
         $StatusCode = [HttpStatusCode]::BadRequest
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = $body
         })
