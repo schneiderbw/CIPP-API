@@ -1,22 +1,12 @@
-using namespace System.Net
-
-Function Invoke-ExecUniversalSearch {
+function Invoke-ExecUniversalSearch {
     <#
     .FUNCTIONALITY
-        Entrypoint
+        Entrypoint,AnyTenant
     .ROLE
         CIPP.Core.Read
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
-
-
-    # Write to the Azure Functions log stream.
-    Write-Host 'PowerShell HTTP trigger function processed a request.'
-
     # Interact with query parameters or the body of the request.
 
     try {
@@ -38,11 +28,11 @@ Function Invoke-ExecUniversalSearch {
                 )
             }
         } | ConvertTo-Json -Depth 10
-        $GraphRequest = (New-GraphPOSTRequest -noauthcheck $true -type 'POST' -uri 'https://graph.microsoft.com/beta/tenantRelationships/managedTenants/managedTenantOperations' -tenantid $env:TenantID -body $payload -IgnoreErrors $true)
+        $GraphRequest = New-GraphPOSTRequest -noauthcheck $true -type 'POST' -uri 'https://graph.microsoft.com/beta/tenantRelationships/managedTenants/managedTenantOperations' -tenantid $env:TenantID -body $payload -IgnoreErrors $true
         if (!$GraphRequest.result.results) {
             $GraphRequest = ($GraphRequest.error.message | ConvertFrom-Json).result.results | ConvertFrom-Json | Where-Object { $_.'_TenantId' -in $tenantfilter.customerId }
         } else {
-            $GraphRequest.result.Results | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object { $_.'_TenantId' -in $tenantfilter.customerId }
+            $GraphRequest = $GraphRequest.result.Results | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object { $_.'_TenantId' -in $tenantfilter.customerId }
         }
         $StatusCode = [HttpStatusCode]::OK
     } catch {
@@ -50,10 +40,9 @@ Function Invoke-ExecUniversalSearch {
         $StatusCode = [HttpStatusCode]::Forbidden
         $GraphRequest = "Could not connect to Azure Lighthouse API: $($ErrorMessage)"
     }
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = $StatusCode
-            Body       = @($GraphRequest)
-        })
+    return [HttpResponseContext]@{
+        StatusCode = $StatusCode
+        Body       = @($GraphRequest)
+    }
 
 }

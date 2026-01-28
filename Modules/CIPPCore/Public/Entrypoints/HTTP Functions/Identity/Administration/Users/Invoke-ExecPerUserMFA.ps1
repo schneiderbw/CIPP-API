@@ -6,23 +6,34 @@ function Invoke-ExecPerUserMFA {
     .ROLE
     Identity.User.ReadWrite
     #>
-    Param(
-        $Request,
-        $TriggerMetadata
-    )
+    param($Request, $TriggerMetadata)
+
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+
+
+    # Guest user handling
+    $UserId = $Request.Body.userPrincipalName -match '#EXT#' ? $Request.Body.userId : $Request.Body.userPrincipalName
+    $TenantFilter = $Request.Body.tenantFilter
+    $State = $Request.Body.State.value ?  $Request.Body.State.value : $Request.Body.State
 
     $Request = @{
-        userId        = $Request.Body.userId
-        TenantFilter  = $Request.Body.TenantFilter
-        State         = $Request.Body.State
-        executingUser = $Request.Headers.'x-ms-client-principal'
+        userId       = $UserId
+        TenantFilter = $TenantFilter
+        State        = $State
+        Headers      = $Headers
+        APIName      = $APIName
     }
-    $Result = Set-CIPPPerUserMFA @Request
-    $Body = @{
-        Results = @($Result)
+    try {
+        $Result = Set-CIPPPerUserMFA @Request
+        $StatusCode = [HttpStatusCode]::OK
+    } catch {
+        $Result = $_.Exception.Message
+        $StatusCode = [HttpStatusCode]::InternalServerError
     }
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
-            Body       = $Body
+
+    return ([HttpResponseContext]@{
+            StatusCode = $StatusCode
+            Body       = @{ 'Results' = @($Result) }
         })
 }

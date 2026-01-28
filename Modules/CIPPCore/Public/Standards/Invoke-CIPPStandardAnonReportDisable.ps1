@@ -13,35 +13,48 @@ function Invoke-CIPPStandardAnonReportDisable {
         CAT
             Global Standards
         TAG
-            "lowimpact"
+        EXECUTIVETEXT
+            Configures Microsoft 365 reports to display actual usernames instead of anonymized identifiers, enabling IT administrators to effectively troubleshoot issues and generate meaningful usage reports. This improves operational efficiency and system management capabilities.
         ADDEDCOMPONENT
         IMPACT
             Low Impact
+        ADDEDDATE
+            2021-11-16
         POWERSHELLEQUIVALENT
             Update-MgBetaAdminReportSetting -BodyParameter @{displayConcealedNames = \$true}
         RECOMMENDEDBY
+            "CIPP"
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
 
     param($Tenant, $Settings)
     #$Rerun -Type Standard -Tenant $Tenant -API 'allowOTPTokens' -Settings $Settings
 
-    $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/admin/reportSettings' -tenantid $Tenant -AsApp $true
+    try {
+        $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/admin/reportSettings' -tenantid $Tenant -AsApp $true
+    } catch {
+        $ErrorMessage = Get-CippException -Exception $_
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the AnonReportDisable state for $Tenant. Error: $($ErrorMessage.NormalizedError)" -Sev Error -LogData $ErrorMessage
+        return
+    }
 
-    If ($Settings.remediate -eq $true) {
+    $CurrentValue = $CurrentInfo | Select-Object -Property displayConcealedNames
+    $ExpectedValue = [PSCustomObject]@{displayConcealedNames = $false }
+
+    if ($Settings.remediate -eq $true) {
 
         if ($CurrentInfo.displayConcealedNames -eq $false) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'Anonymous Reports is already disabled.' -sev Info
         } else {
             try {
-                New-GraphPostRequest -tenantid $tenant -Uri 'https://graph.microsoft.com/beta/admin/reportSettings' -Type patch -Body '{"displayConcealedNames": false}' -ContentType 'application/json' -AsApp $true
+                New-GraphPOSTRequest -tenantid $tenant -Uri 'https://graph.microsoft.com/beta/admin/reportSettings' -Type patch -Body '{"displayConcealedNames": false}' -AsApp $true
                 Write-LogMessage -API 'Standards' -tenant $tenant -message 'Anonymous Reports Disabled.' -sev Info
             } catch {
-                $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
-                Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to disable anonymous reports. Error: $ErrorMessage" -sev Error
+                $ErrorMessage = Get-CippException -Exception $_
+                Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to disable anonymous reports. Error: $($ErrorMessage.NormalizedError)" -sev Error -LogData $ErrorMessage
             }
         }
     }
@@ -50,10 +63,12 @@ function Invoke-CIPPStandardAnonReportDisable {
         if ($CurrentInfo.displayConcealedNames -eq $false) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'Anonymous Reports is disabled' -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Anonymous Reports is not disabled' -sev Alert
+            Write-StandardsAlert -message 'Anonymous Reports is not disabled' -object $CurrentInfo -tenant $tenant -standardName 'AnonReportDisable' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Anonymous Reports is not disabled' -sev Info
         }
     }
     if ($Settings.report -eq $true) {
+        Set-CIPPStandardsCompareField -FieldName 'standards.AnonReportDisable' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $tenant
         Add-CIPPBPAField -FieldName 'AnonReport' -FieldValue $CurrentInfo.displayConcealedNames -StoreAs bool -Tenant $tenant
     }
 }

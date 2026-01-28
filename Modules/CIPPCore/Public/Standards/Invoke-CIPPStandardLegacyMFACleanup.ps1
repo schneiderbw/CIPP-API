@@ -13,20 +13,24 @@ function Invoke-CIPPStandardLegacyMFACleanup {
         CAT
             Entra (AAD) Standards
         TAG
-            "mediumimpact"
+        EXECUTIVETEXT
+            This standard is currently non-functional and should be disabled. It was previously designed to remove outdated multi-factor authentication configurations in favor of modern security policies.
         ADDEDCOMPONENT
         IMPACT
             Medium Impact
+        ADDEDDATE
+            2021-11-16
         POWERSHELLEQUIVALENT
             Set-MsolUser -StrongAuthenticationRequirements \$null
         RECOMMENDEDBY
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
 
     param($Tenant, $Settings)
     Write-LogMessage -API 'Standards' -tenant $tenant -message 'Per User MFA APIs have been disabled.' -sev Info
+    # TODO - Re-implement this standard
 
 }
