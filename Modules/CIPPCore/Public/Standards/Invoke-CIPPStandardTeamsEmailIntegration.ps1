@@ -1,4 +1,4 @@
-Function Invoke-CIPPStandardTeamsEmailIntegration {
+function Invoke-CIPPStandardTeamsEmailIntegration {
     <#
     .FUNCTIONALITY
         Internal
@@ -12,43 +12,57 @@ Function Invoke-CIPPStandardTeamsEmailIntegration {
     .NOTES
         CAT
             Teams Standards
-        TAG
-            "lowimpact"
+        EXECUTIVETEXT
+            Controls whether Teams channels can receive emails directly, enabling integration between email and team collaboration. This feature can improve workflow efficiency by allowing external communications to flow into team discussions, though it may need management for security or organizational reasons.
         ADDEDCOMPONENT
-            {"type":"boolean","name":"standards.TeamsEmailIntegration.AllowEmailIntoChannel","label":"Allow channel emails"}
+            {"type":"switch","name":"standards.TeamsEmailIntegration.AllowEmailIntoChannel","label":"Allow channel emails"}
         IMPACT
             Low Impact
+        ADDEDDATE
+            2024-07-30
         POWERSHELLEQUIVALENT
             Set-CsTeamsClientConfiguration -AllowEmailIntoChannel \$false
         RECOMMENDEDBY
-            "CIS 3.0"
+            "CIS"
+        TAG
+            "CIS M365 5.0 (8.1.2)"
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'TeamsEmailIntegration'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'TeamsEmailIntegration' -TenantFilter $Tenant -RequiredCapabilities @('MCOSTANDARD', 'MCOEV', 'MCOIMP', 'TEAMS1', 'Teams_Room_Standard')
 
-    $CurrentState = New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Get-CsTeamsClientConfiguration' -CmdParams @{Identity = 'Global' }
-    | Select-Object AllowEmailIntoChannel
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
 
-    if ($null -eq $Settings.AllowEmailIntoChannel) { $Settings.AllowEmailIntoChannel = $false }
+    try {
+        $CurrentState = New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Get-CsTeamsClientConfiguration' -CmdParams @{Identity = 'Global' } |
+            Select-Object AllowEmailIntoChannel
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the TeamsEmailIntegration state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
-    $StateIsCorrect = ($CurrentState.AllowEmailIntoChannel -eq $Settings.AllowEmailIntoChannel)
+    $AllowEmailIntoChannel = $Settings.AllowEmailIntoChannel ?? $false
+
+    $StateIsCorrect = ($CurrentState.AllowEmailIntoChannel -eq $AllowEmailIntoChannel)
 
     if ($Settings.remediate -eq $true) {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Teams Email Integration settings already set.' -sev Info
         } else {
-            $cmdparams = @{
+            $cmdParams = @{
                 Identity              = 'Global'
-                AllowEmailIntoChannel = $Settings.AllowEmailIntoChannel
+                AllowEmailIntoChannel = $AllowEmailIntoChannel
             }
 
             try {
-                New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Set-CsTeamsClientConfiguration' -CmdParams $cmdparams
+                New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Set-CsTeamsClientConfiguration' -CmdParams $cmdParams
                 Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Updated Teams Email Integration settings' -sev Info
             } catch {
                 $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
@@ -61,11 +75,21 @@ Function Invoke-CIPPStandardTeamsEmailIntegration {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Teams Email Integration settings is set correctly.' -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Teams Email Integration settings is not set correctly.' -sev Alert
+            Write-StandardsAlert -message 'Teams Email Integration settings is not set correctly.' -object $CurrentState -tenant $Tenant -standardName 'TeamsEmailIntegration' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Teams Email Integration settings is not set correctly.' -sev Info
         }
     }
 
-    if ($Setings.report -eq $true) {
+    if ($Settings.report -eq $true) {
+
+        $CurrentValue = @{
+            AllowEmailIntoChannel = $CurrentState.AllowEmailIntoChannel
+        }
+        $ExpectedValue = @{
+            AllowEmailIntoChannel = $AllowEmailIntoChannel
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.TeamsEmailIntegration' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
         Add-CIPPBPAField -FieldName 'TeamsEmailIntoChannel' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $Tenant
+
     }
 }
