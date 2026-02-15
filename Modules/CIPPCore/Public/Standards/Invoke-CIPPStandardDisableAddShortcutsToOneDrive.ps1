@@ -13,42 +13,69 @@ function Invoke-CIPPStandardDisableAddShortcutsToOneDrive {
         CAT
             SharePoint Standards
         TAG
-            "mediumimpact"
+        EXECUTIVETEXT
+            Controls whether employees can create shortcuts to SharePoint libraries in their OneDrive, managing how users organize and access shared content. This setting helps maintain organized file structures and can prevent confusion from excessive shortcuts while preserving existing workflows.
         ADDEDCOMPONENT
-            {"type":"Select","label":"Add Shortcuts To OneDrive button state","name":"standards.DisableAddShortcutsToOneDrive.state","values":[{"label":"Disabled","value":"true"},{"label":"Enabled","value":"false"}]}
+            {"type":"autoComplete","multiple":false,"creatable":false,"label":"Add Shortcuts To OneDrive button state","name":"standards.DisableAddShortcutsToOneDrive.state","options":[{"label":"Disabled","value":"true"},{"label":"Enabled","value":"false"}]}
         IMPACT
             Medium Impact
+        ADDEDDATE
+            2023-07-25
         POWERSHELLEQUIVALENT
             Set-SPOTenant -DisableAddShortcutsToOneDrive \$true or \$false
         RECOMMENDEDBY
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'DisableAddShortcutsToOneDrive' -TenantFilter $Tenant -RequiredCapabilities @('SHAREPOINTWAC', 'SHAREPOINTSTANDARD', 'SHAREPOINTENTERPRISE', 'SHAREPOINTENTERPRISE_EDU', 'ONEDRIVE_BASIC', 'ONEDRIVE_ENTERPRISE')
     ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'DisableAddShortcutsToOneDrive'
 
-    $CurrentState = Get-CIPPSPOTenant -TenantFilter $Tenant | Select-Object _ObjectIdentity_, TenantFilter, DisableAddToOneDrive
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
 
-    if ($Settings.report -eq $true) {
-        Add-CIPPBPAField -FieldName 'OneDriveAddShortcutButtonDisabled' -FieldValue $CurrentState.DisableAddToOneDrive -StoreAs bool -Tenant $Tenant
+    try {
+        $CurrentState = Get-CIPPSPOTenant -TenantFilter $Tenant |
+            Select-Object _ObjectIdentity_, TenantFilter, DisableAddToOneDrive
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the DisableAddShortcutsToOneDrive state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
     }
 
     # Input validation
-    if (([string]::IsNullOrWhiteSpace($Settings.state) -or $Settings.state -eq 'Select a value') -and ($Settings.remediate -eq $true -or $Settings.alert -eq $true)) {
+    $StateValue = $Settings.state.value ?? $Settings.state
+    if (([string]::IsNullOrWhiteSpace($StateValue) -or $StateValue -eq 'Select a value') -and ($Settings.remediate -eq $true -or $Settings.alert -eq $true)) {
         Write-LogMessage -API 'Standards' -tenant $tenant -message 'DisableAddShortcutsToOneDrive: Invalid state parameter set' -sev Error
-        Return
+        return
     }
 
-    $WantedState = [System.Convert]::ToBoolean($Settings.state)
+    $CurrentValue = [PSCustomObject]@{
+        DisableAddShortcutsToOneDrive = $CurrentState.DisableAddToOneDrive
+    }
+    $ExpectedValue = [PSCustomObject]@{
+        DisableAddShortcutsToOneDrive = [System.Convert]::ToBoolean($StateValue)
+    }
+
+    $WantedState = [System.Convert]::ToBoolean($StateValue)
     $StateIsCorrect = if ($CurrentState.DisableAddToOneDrive -eq $WantedState) { $true } else { $false }
     $HumanReadableState = if ($WantedState -eq $true) { 'disabled' } else { 'enabled' }
 
-    If ($Settings.remediate -eq $true) {
-        Write-Host 'Time to remediate'
+    if ($Settings.report -eq $true) {
+        if ($StateIsCorrect -eq $true) {
+            $FieldValue = $true
+        } else {
+            $FieldValue = $CurrentState | Select-Object -Property DisableAddToOneDrive
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.DisableAddShortcutsToOneDrive' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
+        Add-CIPPBPAField -FieldName 'OneDriveAddShortcutButtonDisabled' -FieldValue $CurrentState.DisableAddToOneDrive -StoreAs bool -Tenant $Tenant
+    }
 
+    if ($Settings.remediate -eq $true) {
         if ($StateIsCorrect -eq $false) {
             try {
                 $CurrentState | Set-CIPPSPOTenant -Properties @{DisableAddToOneDrive = $WantedState }
@@ -67,7 +94,8 @@ function Invoke-CIPPStandardDisableAddShortcutsToOneDrive {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message "The Add Shortcuts To OneDrive Button is already set to the wanted state of $HumanReadableState" -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message "The Add Shortcuts To OneDrive Button Button is not set to the wanted state of $HumanReadableState" -sev Alert
+            Write-StandardsAlert -message "The Add Shortcuts To OneDrive Button is not set to the wanted state of $HumanReadableState" -object $CurrentState -tenant $tenant -standardName 'DisableAddShortcutsToOneDrive' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -message "The Add Shortcuts To OneDrive Button Button is not set to the wanted state of $HumanReadableState" -sev Info
         }
     }
 
