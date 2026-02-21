@@ -13,68 +13,92 @@ function Invoke-CIPPStandardDelegateSentItems {
         CAT
             Exchange Standards
         TAG
-            "mediumimpact"
+        EXECUTIVETEXT
+            Ensures emails sent from shared mailboxes (like info@company.com) are stored in the shared mailbox rather than the individual sender's mailbox. This maintains complete email threads in one location, improving collaboration and ensuring all team members can see the full conversation history.
         ADDEDCOMPONENT
+            {"type":"switch","label":"Include user mailboxes","name":"standards.DelegateSentItems.IncludeUserMailboxes"}
         IMPACT
             Medium Impact
+        ADDEDDATE
+            2021-11-16
         POWERSHELLEQUIVALENT
             Set-Mailbox
         RECOMMENDEDBY
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'DelegateSentItems' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
+
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
     #$Rerun -Type Standard -Tenant $Tenant -API 'DelegateSentItems' -Settings $Settings
 
 
+    # Backwards compatibility for Pre 7.0.5
+    if ([string]::IsNullOrWhiteSpace($Settings.IncludeUserMailboxes)) {
+        $Settings.IncludeUserMailboxes = $true
+    }
+    $Mailboxes = New-CippDbRequest -TenantFilter $Tenant -Type 'Mailboxes'
+    if ($Settings.IncludeUserMailboxes -eq $true) {
+        $Mailboxes = $Mailboxes | Where-Object { $_.recipientTypeDetails -ne 'DiscoveryMailbox' -and  ($_.MessageCopyForSendOnBehalfEnabled -eq $false -or $_.MessageCopyForSentAsEnabled -eq $false) }
+    } else {
+        $Mailboxes = $Mailboxes | Where-Object { $_.recipientTypeDetails -eq 'SharedMailbox' -and ($_.MessageCopyForSendOnBehalfEnabled -eq $false -or $_.MessageCopyForSentAsEnabled -eq $false) }
+    }
 
-    $Mailboxes = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-Mailbox' -cmdParams @{ RecipientTypeDetails = @('UserMailbox', 'SharedMailbox') } |
-    Where-Object { $_.MessageCopyForSendOnBehalfEnabled -eq $false -or $_.MessageCopyForSentAsEnabled -eq $false }
-    Write-Host "Mailboxes: $($Mailboxes.count)"
-    If ($Settings.remediate -eq $true) {
-        Write-Host 'Time to remediate'
+    $CurrentValue = if (!$Mailboxes) {
+        [PSCustomObject]@{ state = 'Configured correctly' }
+    } else {
+        [PSCustomObject]@{ NonCompliantMailboxes = $Mailboxes | Select-Object -Property UserPrincipalName, MessageCopyForSendOnBehalfEnabled, MessageCopyForSentAsEnabled }
+    }
+    $ExpectedValue = [PSCustomObject]@{
+        state = 'Configured correctly'
+    }
 
+    if ($Settings.remediate -eq $true) {
         if ($Mailboxes) {
             try {
-                $Request = $Mailboxes | ForEach-Object {
+                $Request = foreach ($Mailbox in $Mailboxes) {
                     @{
                         CmdletInput = @{
                             CmdletName = 'Set-Mailbox'
-                            Parameters = @{Identity = $_.UserPrincipalName ; MessageCopyForSendOnBehalfEnabled = $true; MessageCopyForSentAsEnabled = $true }
+                            Parameters = @{Identity = $Mailbox.UserPrincipalName ; MessageCopyForSendOnBehalfEnabled = $true; MessageCopyForSentAsEnabled = $true }
                         }
                     }
                 }
-                $BatchResults = New-ExoBulkRequest -tenantid $tenant -cmdletArray @($Request)
-                $BatchResults | ForEach-Object {
-                    if ($_.error) {
-                        $ErrorMessage = Get-NormalizedError -Message $_.error
-                        Write-Host "Failed to apply Delegate Sent Items Style to $($_.target) Error: $ErrorMessage"
-                        Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to apply Delegate Sent Items Style to $($_.error.target) Error: $ErrorMessage" -sev Error
+                $BatchResults = New-ExoBulkRequest -tenantid $Tenant -cmdletArray @($Request)
+                foreach ($Result in $BatchResults) {
+                    if ($Result.error) {
+                        $ErrorMessage = Get-CippException -Exception $Result.error
+                        Write-LogMessage -API 'Standards' -tenant $Tenant -message "Failed to apply Delegate Sent Items Style to $($Result.error.target) Error: $($ErrorMessage.NormalizedError)" -sev Error -LogData $ErrorMessage
                     }
                 }
-                Write-LogMessage -API 'Standards' -tenant $tenant -message "Delegate Sent Items Style applied for $($Mailboxes.count - $BatchResults.Error.Count) mailboxes" -sev Info
+                Write-LogMessage -API 'Standards' -tenant $Tenant -message "Delegate Sent Items Style applied for $($Mailboxes.Count - $BatchResults.Error.Count) mailboxes" -sev Info
             } catch {
-                $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
-                Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to apply Delegate Sent Items Style. Error: $ErrorMessage" -sev Error
+                $ErrorMessage = Get-CippException -Exception $_
+                Write-LogMessage -API 'Standards' -tenant $Tenant -message "Failed to apply Delegate Sent Items Style. Error: $($ErrorMessage.NormalizedError)" -sev Error -LogData $ErrorMessage
             }
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Delegate Sent Items Style already enabled.' -sev Info
+            Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Delegate Sent Items Style already enabled.' -sev Info
 
         }
     }
     if ($Settings.alert -eq $true) {
         if ($null -eq $Mailboxes) {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Delegate Sent Items Style is enabled for all mailboxes' -sev Info
+            Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Delegate Sent Items Style is enabled for all mailboxes' -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message "Delegate Sent Items Style is not enabled for $($Mailboxes.count) mailboxes" -sev Alert
+            Write-StandardsAlert -message "Delegate Sent Items Style is not enabled for $($Mailboxes.Count) mailboxes" -object $Mailboxes -tenant $Tenant -standardName 'DelegateSentItems' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $Tenant -message "Delegate Sent Items Style is not enabled for $($Mailboxes.Count) mailboxes" -sev Info
         }
     }
 
     if ($Settings.report -eq $true) {
         $Filtered = $Mailboxes | Select-Object -Property UserPrincipalName, MessageCopyForSendOnBehalfEnabled, MessageCopyForSentAsEnabled
-        Add-CIPPBPAField -FieldName 'DelegateSentItems' -FieldValue $Filtered -StoreAs json -Tenant $tenant
+        Set-CIPPStandardsCompareField -FieldName 'standards.DelegateSentItems' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
+        Add-CIPPBPAField -FieldName 'DelegateSentItems' -FieldValue $Filtered -StoreAs json -Tenant $Tenant
     }
 }

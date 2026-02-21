@@ -13,34 +13,48 @@ function Invoke-CIPPStandardSPExternalUserExpiration {
         CAT
             SharePoint Standards
         TAG
-            "mediumimpact"
-            "CIS"
+            "CIS M365 5.0 (7.2.9)"
+            "CISA (MS.SPO.1.5v1)"
+        EXECUTIVETEXT
+            Automatically expires external user access to SharePoint sites and OneDrive after a specified period, reducing security risks from forgotten or unnecessary guest accounts. This ensures external access is regularly reviewed and maintained only when actively needed.
         ADDEDCOMPONENT
             {"type":"number","name":"standards.SPExternalUserExpiration.Days","label":"Days until expiration (Default 60)"}
         IMPACT
             Medium Impact
+        ADDEDDATE
+            2024-07-09
         POWERSHELLEQUIVALENT
             Set-SPOTenant -ExternalUserExpireInDays 30 -ExternalUserExpirationRequired \$True
         RECOMMENDEDBY
-            "CIS 3.0"
+            "CIS"
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'SPExternalUserExpiration'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'SPExternalUserExpiration' -TenantFilter $Tenant -RequiredCapabilities @('SHAREPOINTWAC', 'SHAREPOINTSTANDARD', 'SHAREPOINTENTERPRISE', 'SHAREPOINTENTERPRISE_EDU', 'ONEDRIVE_BASIC', 'ONEDRIVE_ENTERPRISE')
 
-    $CurrentState = Get-CIPPSPOTenant -TenantFilter $Tenant |
-    Select-Object -Property ExternalUserExpireInDays, ExternalUserExpirationRequired
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    try {
+        $CurrentState = Get-CIPPSPOTenant -TenantFilter $Tenant |
+            Select-Object -Property _ObjectIdentity_, TenantFilter, ExternalUserExpireInDays, ExternalUserExpirationRequired
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the SPExternalUserExpiration state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     $StateIsCorrect = ($CurrentState.ExternalUserExpireInDays -eq $Settings.Days) -and
-                      ($CurrentState.ExternalUserExpirationRequired -eq $true)
+    ($CurrentState.ExternalUserExpirationRequired -eq $true)
 
     if ($Settings.remediate -eq $true) {
         if ($StateIsCorrect -eq $true) {
-            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Sharepoint External User Expiration is already enabled.' -Sev Info
+            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'SharePoint External User Expiration is already enabled.' -Sev Info
         } else {
             $Properties = @{
                 ExternalUserExpireInDays       = $Settings.Days
@@ -48,11 +62,11 @@ function Invoke-CIPPStandardSPExternalUserExpiration {
             }
 
             try {
-                Get-CIPPSPOTenant -TenantFilter $Tenant | Set-CIPPSPOTenant -Properties $Properties
+                $CurrentState | Set-CIPPSPOTenant -Properties $Properties
                 Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Successfully set External User Expiration' -Sev Info
             } catch {
-                $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
-                Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Failed to set External User Expiration. Error: $ErrorMessage" -Sev Error
+                $ErrorMessage = Get-CippException -Exception $_
+                Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Failed to set External User Expiration. Error: $($ErrorMessage.NormalizedError)" -Sev Error -LogData $ErrorMessage
             }
         }
     }
@@ -61,11 +75,28 @@ function Invoke-CIPPStandardSPExternalUserExpiration {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'External User Expiration is enabled' -Sev Info
         } else {
-            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'External User Expiration is not enabled' -Sev Alert
+            $Message = 'External User Expiration is not set to the desired value.'
+            Write-StandardsAlert -message $Message -object $CurrentState -tenant $Tenant -standardName 'SPExternalUserExpiration' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message $Message -Sev Alert
         }
     }
 
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'ExternalUserExpiration' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $Tenant
+        if ($StateIsCorrect) {
+            $FieldValue = $true
+        } else {
+            $FieldValue = $CurrentState
+        }
+        $CurrentValue = @{
+            ExternalUserExpireInDays       = $CurrentState.ExternalUserExpireInDays
+            ExternalUserExpirationRequired = $CurrentState.ExternalUserExpirationRequired
+        }
+        $ExpectedValue = @{
+            ExternalUserExpireInDays       = $Settings.Days
+            ExternalUserExpirationRequired = $true
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.SPExternalUserExpiration' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
+        Add-CIPPBPAField -FieldName 'standards.SPExternalUserExpiration' -FieldValue $FieldValue -StoreAs bool -Tenant $Tenant
     }
 }

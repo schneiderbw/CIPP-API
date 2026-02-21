@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ExecGraphExplorerPreset {
+function Invoke-ExecGraphExplorerPreset {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -9,24 +7,23 @@ Function Invoke-ExecGraphExplorerPreset {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
+    $Headers = $Request.Headers
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $Username = ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Headers.'x-ms-client-principal')) | ConvertFrom-Json).userDetails
 
-    $Username = ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($request.headers.'x-ms-client-principal')) | ConvertFrom-Json).userDetails
-    # Write to the Azure Functions log stream.
-    Write-Host 'PowerShell HTTP trigger function processed a request.'
-    $Action = $Request.Body.Action ?? ''
+    $Action = $Request.Body.action ?? ''
+
+    Write-Information ($Request.Body | ConvertTo-Json -Depth 10)
 
     switch ($Action) {
         'Copy' {
-            $Id = (New-Guid).Guid
+            $Id = $Request.Body.preset.id ? $Request.Body.preset.id : (New-Guid).Guid
         }
         'Save' {
-            $Id = $Request.Body.preset.reportTemplate.value
+            $Id = $Request.Body.preset.id
         }
         'Delete' {
-            $Id = $Request.Body.preset.reportTemplate.value
+            $Id = $Request.Body.preset.id
         }
         default {
             $Action = 'Copy'
@@ -38,6 +35,36 @@ Function Invoke-ExecGraphExplorerPreset {
 
     if ($params.'$select'.value) {
         $params.'$select' = ($params.'$select').value -join ','
+    }
+
+    if (!$Request.Body.preset.name -and $Action -ne 'Delete') {
+        $Message = 'Error: Preset name is required'
+        $StatusCode = [HttpStatusCode]::BadRequest
+        return ([HttpResponseContext]@{
+                StatusCode = $StatusCode
+                Body       = @{
+                    Results = @(@{
+                        resultText = $Message
+                        state      = 'error'
+                    })
+                }
+            })
+        return
+    }
+
+    if (!$Request.Body.preset.endpoint -and $Action -ne 'Delete') {
+        $Message = 'Error: Preset endpoint is required'
+        $StatusCode = [HttpStatusCode]::BadRequest
+        return ([HttpResponseContext]@{
+                StatusCode = $StatusCode
+                Body       = @{
+                    Results = @(@{
+                        resultText = $Message
+                        state      = 'error'
+                    })
+                }
+            })
+        return
     }
 
     $Preset = [PSCustomObject]@{
@@ -55,7 +82,7 @@ Function Invoke-ExecGraphExplorerPreset {
         $Table = Get-CIPPTable -TableName 'GraphPresets'
         $Message = '{0} preset succeeded' -f $Action
         if ($Action -eq 'Copy') {
-            Add-CIPPAzDataTableEntity @Table -Entity $Preset
+            Add-CIPPAzDataTableEntity @Table -Entity $Preset -Force
             $Success = $true
         } else {
             $Entity = Get-CIPPAzDataTableEntity @Table -Filter "RowKey eq '$Id'"
@@ -67,6 +94,7 @@ Function Invoke-ExecGraphExplorerPreset {
                 }
                 $Success = $true
             } else {
+                Write-Host "username in table: $($Entity.Owner). Username in request: $Username"
                 $Message = 'Error: You can only modify your own presets.'
                 $Success = $false
             }
@@ -78,12 +106,13 @@ Function Invoke-ExecGraphExplorerPreset {
         $Message = $_.Exception.Message
         $StatusCode = [HttpStatusCode]::BadRequest
     }
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = @{
-                Results = $Message
-                Success = $Success
+                Results = @(@{
+                    resultText = $Message
+                    state      = if ($Success) { 'success' } else { 'error' }
+                })
             }
         })
 }
