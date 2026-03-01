@@ -4,12 +4,62 @@ function Get-GraphToken($tenantid, $scope, $AsApp, $AppID, $AppSecret, $refreshT
     Internal
     #>
     if (!$scope) { $scope = 'https://graph.microsoft.com/.default' }
+
     if (!$env:SetFromProfile) { $CIPPAuth = Get-CIPPAuthentication; Write-Host 'Could not get Refreshtoken from environment variable. Reloading token.' }
+    $ConfigTable = Get-CippTable -tablename 'Config'
+    $Filter = "PartitionKey eq 'AppCache' and RowKey eq 'AppCache'"
+    $AppCache = Get-CIPPAzDataTableEntity @ConfigTable -Filter $Filter
+    #force auth update is appId is not the same as the one in the environment variable.
+    if ($AppCache.ApplicationId -and $env:ApplicationID -ne $AppCache.ApplicationId) {
+        Write-Host "Setting environment variable ApplicationID to $($AppCache.ApplicationId)"
+        $CIPPAuth = Get-CIPPAuthentication
+    }
+    $refreshToken = $env:RefreshToken
+    if (!$tenantid) { $tenantid = $env:TenantID }
+    #Get list of tenants that have 'directTenant' set to true
+    #get directtenants directly from table, avoid get-tenants due to performance issues
+    $TenantsTable = Get-CippTable -tablename 'Tenants'
+    $Filter = "PartitionKey eq 'Tenants' and delegatedPrivilegeStatus eq 'directTenant'"
+    $ClientType = Get-CIPPAzDataTableEntity @TenantsTable -Filter $Filter | Where-Object { $_.customerId -eq $tenantid -or $_.defaultDomainName -eq $tenantid }
+    if ($tenantid -ne $env:TenantID -and $clientType.delegatedPrivilegeStatus -eq 'directTenant') {
+        Write-Host "Using direct tenant refresh token for $($clientType.customerId)"
+        $ClientRefreshToken = Get-Item -Path "env:\$($clientType.customerId)" -ErrorAction SilentlyContinue
+
+        if ($null -eq $ClientRefreshToken) {
+            # Lazy load the refresh token from Key Vault only when needed
+            Write-Host "Fetching refresh token for direct tenant $($clientType.customerId) from Key Vault"
+            try {
+                if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true' -or $env:NonLocalHostAzurite -eq 'true') {
+                    # Development environment - get from table storage
+                    $Table = Get-CIPPTable -tablename 'DevSecrets'
+                    $Secret = Get-AzDataTableEntity @Table -Filter "PartitionKey eq 'Secret' and RowKey eq 'Secret'"
+                    $secretname = $clientType.customerId -replace '-', '_'
+                    if ($Secret.$secretname) {
+                        Set-Item -Path "env:\$($clientType.customerId)" -Value $Secret.$secretname -Force
+                        $ClientRefreshToken = Get-Item -Path "env:\$($clientType.customerId)" -ErrorAction SilentlyContinue
+                    }
+                } else {
+                    # Production environment - get from Key Vault
+                    $keyvaultname = ($env:WEBSITE_DEPLOYMENT_ID -split '-')[0]
+                    $secret = Get-CippKeyVaultSecret -VaultName $keyvaultname -Name $clientType.customerId -AsPlainText -ErrorAction Stop
+                    if ($secret) {
+                        Set-Item -Path "env:\$($clientType.customerId)" -Value $secret -Force
+                        $ClientRefreshToken = Get-Item -Path "env:\$($clientType.customerId)" -ErrorAction SilentlyContinue
+                    }
+                }
+            } catch {
+                Write-Host "Failed to retrieve refresh token for direct tenant $($clientType.customerId): $($_.Exception.Message)"
+            }
+        }
+
+        $refreshToken = $ClientRefreshToken.Value
+    }
+
     $AuthBody = @{
         client_id     = $env:ApplicationID
         client_secret = $env:ApplicationSecret
         scope         = $Scope
-        refresh_token = $env:RefreshToken
+        refresh_token = $refreshToken
         grant_type    = 'refresh_token'
     }
     if ($asApp -eq $true) {
@@ -24,7 +74,7 @@ function Get-GraphToken($tenantid, $scope, $AsApp, $AppID, $AppSecret, $refreshT
     if ($null -ne $AppID -and $null -ne $refreshToken) {
         $AuthBody = @{
             client_id     = $appid
-            refresh_token = $RefreshToken
+            refresh_token = $refreshToken
             scope         = $Scope
             grant_type    = 'refresh_token'
         }
@@ -39,7 +89,6 @@ function Get-GraphToken($tenantid, $scope, $AsApp, $AppID, $AppSecret, $refreshT
         }
     }
 
-    if (!$tenantid) { $tenantid = $env:TenantID }
 
     $TokenKey = '{0}-{1}-{2}' -f $tenantid, $scope, $asApp
 
@@ -74,14 +123,18 @@ function Get-GraphToken($tenantid, $scope, $AsApp, $AppID, $AppSecret, $refreshT
             }
         }
         $Tenant.LastGraphError = if ( $_.ErrorDetails.Message) {
-            $msg = $_.ErrorDetails.Message | ConvertFrom-Json
-            "$($msg.error):$($msg.error_description)"
+            if (Test-Json $_.ErrorDetails.Message -ErrorAction SilentlyContinue) {
+                $msg = $_.ErrorDetails.Message | ConvertFrom-Json
+                "$($msg.error):$($msg.error_description)"
+            } else {
+                "$($_.ErrorDetails.Message)"
+            }
         } else {
-            $_.Exception.message
+            $_.Exception.Message
         }
         $Tenant.GraphErrorCount++
 
-        if (!$donotset) { Update-AzDataTableEntity @TenantsTable -Entity $Tenant }
+        if (!$donotset) { Update-AzDataTableEntity -Force @TenantsTable -Entity $Tenant }
         throw "Could not get token: $($Tenant.LastGraphError)"
     }
 }

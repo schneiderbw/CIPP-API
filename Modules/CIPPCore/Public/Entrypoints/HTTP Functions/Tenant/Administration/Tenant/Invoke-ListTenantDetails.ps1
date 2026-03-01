@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ListTenantDetails {
     <#
     .FUNCTIONALITY
@@ -10,42 +8,35 @@ Function Invoke-ListTenantDetails {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
 
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+
+    # Interact with query parameters or the body of the request.
+    $TenantFilter = $Request.Query.tenantFilter
 
     try {
-        $tenantfilter = $Request.Query.TenantFilter
-        $org = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/organization' -tenantid $tenantfilter | Select-Object displayName, id, city, country, countryLetterCode, street, state, postalCode,
+        $org = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/organization' -tenantid $TenantFilter | Select-Object displayName, id, city, country, countryLetterCode, street, state, postalCode,
         @{ Name = 'businessPhones'; Expression = { $_.businessPhones -join ', ' } },
         @{ Name = 'technicalNotificationMails'; Expression = { $_.technicalNotificationMails -join ', ' } },
         tenantType, createdDateTime, onPremisesLastPasswordSyncDateTime, onPremisesLastSyncDateTime, onPremisesSyncEnabled, assignedPlans
+
+        $customProperties = Get-TenantProperties -customerId $TenantFilter
+        $org | Add-Member -MemberType NoteProperty -Name 'customProperties' -Value $customProperties
+
+        $Groups = (Get-TenantGroups -TenantFilter $TenantFilter) ?? @()
+        $org | Add-Member -MemberType NoteProperty -Name 'Groups' -Value @($Groups)
+        $StatusCode = [HttpStatusCode]::OK
+
     } catch {
-        $org = [PSCustomObject]@{
-            displayName                        = 'Error loading tenant'
-            id                                 = ''
-            city                               = ''
-            country                            = ''
-            countryLetterCode                  = ''
-            street                             = ''
-            state                              = ''
-            postalCode                         = ''
-            businessPhones                     = ''
-            technicalNotificationMails         = ''
-            createdDateTime                    = ''
-            onPremisesLastPasswordSyncDateTime = ''
-            onPremisesLastSyncDateTime         = ''
-            onPremisesSyncEnabled              = ''
-            assignedPlans                      = @()
-        }
-    } finally {
-        $Body = $org
+        $ErrorMessage = Get-CippException -Exception $_
+        $org = "Failed to retrieve tenant details: $($ErrorMessage.NormalizedError)"
+        Write-LogMessage -headers $Headers -API $APIName -message $org -Sev 'Error' -LogData $ErrorMessage
+        $StatusCode = [HttpStatusCode]::InternalServerError
     }
 
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
-            Body       = $Body
+    return ([HttpResponseContext]@{
+            StatusCode = $StatusCode
+            Body       = $org
         })
-
-
 }

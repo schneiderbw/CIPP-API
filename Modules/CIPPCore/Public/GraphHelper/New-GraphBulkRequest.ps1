@@ -3,18 +3,31 @@ function New-GraphBulkRequest {
     .FUNCTIONALITY
     Internal
     #>
-    Param(
+    [CmdletBinding()]
+    param(
         $tenantid,
         $NoAuthCheck,
         $scope,
         $asapp,
-        $Requests
+        $Requests,
+        $NoPaginateIds = @(),
+        [ValidateSet('v1.0', 'beta')]
+        $Version = 'beta',
+        $Headers
     )
 
     if ($NoAuthCheck -or (Get-AuthorisedRequest -Uri $uri -TenantID $tenantid)) {
-        $headers = Get-GraphToken -tenantid $tenantid -scope $scope -AsApp $asapp
+        if ($Headers) {
+            $Headers = $Headers
+        } else {
+            $Headers = Get-GraphToken -tenantid $tenantid -scope $scope -AsApp $asapp
+        }
 
-        $URL = 'https://graph.microsoft.com/beta/$batch'
+        if ($script:XMsThrottlePriority) {
+            $headers['x-ms-throttle-priority'] = $script:XMsThrottlePriority
+        }
+
+        $URL = "https://graph.microsoft.com/$Version/`$batch"
 
         # Track consecutive Graph API failures
         $TenantsTable = Get-CippTable -tablename Tenants
@@ -43,20 +56,37 @@ function New-GraphBulkRequest {
                 $Return
             }
             foreach ($MoreData in $ReturnedData.Responses | Where-Object { $_.body.'@odata.nextLink' }) {
+                if ($NoPaginateIds -contains $MoreData.id) {
+                    continue
+                }
                 Write-Host 'Getting more'
-                $AdditionalValues = New-GraphGetRequest -ComplexFilter -uri $MoreData.body.'@odata.nextLink' -tenantid $tenantid -NoAuthCheck:$NoAuthCheck
+                Write-Host $MoreData.body.'@odata.nextLink'
+                $AdditionalValues = New-GraphGetRequest -ComplexFilter -uri $MoreData.body.'@odata.nextLink' -tenantid $tenantid -NoAuthCheck $NoAuthCheck -scope $scope -AsApp $asapp -headers $Headers
                 $NewValues = [System.Collections.Generic.List[PSCustomObject]]$MoreData.body.value
                 $AdditionalValues | ForEach-Object { $NewValues.add($_) }
                 $MoreData.body.value = $NewValues
             }
 
         } catch {
-            $Message = ($_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue).error.message
-            if ($null -eq $Message) { $Message = $($_.Exception.Message) }
+            Write-Host 'updating graph table because something failed.'
+            # Try to parse ErrorDetails.Message as JSON
+            if ($_.ErrorDetails.Message) {
+                try {
+                    $ErrorJson = $_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction Stop
+                    $Message = $ErrorJson.error.message
+                } catch {
+                    $Message = $_.ErrorDetails.Message
+                }
+            }
+
+            if ([string]::IsNullOrEmpty($Message)) {
+                $Message = $_.Exception.Message
+            }
+
             if ($Message -ne 'Request not applicable to target tenant.') {
                 $Tenant.LastGraphError = $Message ?? ''
                 $Tenant.GraphErrorCount++
-                Update-AzDataTableEntity @TenantsTable -Entity $Tenant
+                Update-AzDataTableEntity -Force @TenantsTable -Entity $Tenant
             }
             throw $Message
         }
@@ -66,8 +96,7 @@ function New-GraphBulkRequest {
         } else {
             $Tenant.LastGraphError = ''
         }
-        Update-AzDataTableEntity @TenantsTable -Entity $Tenant
-
+        Update-AzDataTableEntity -Force @TenantsTable -Entity $Tenant
         return $ReturnedData.responses
     } else {
         Write-Error 'Not allowed. You cannot manage your own tenant or tenants not under your scope'

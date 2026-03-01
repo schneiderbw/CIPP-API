@@ -1,4 +1,4 @@
-Function Invoke-CIPPStandardTeamsExternalAccessPolicy {
+function Invoke-CIPPStandardTeamsExternalAccessPolicy {
     <#
     .FUNCTIONALITY
         Internal
@@ -13,49 +13,58 @@ Function Invoke-CIPPStandardTeamsExternalAccessPolicy {
         CAT
             Teams Standards
         TAG
-            "mediumimpact"
+        EXECUTIVETEXT
+            Defines the organization's policy for communicating with external users through Teams, including other organizations, Skype users, and unmanaged accounts. This fundamental setting determines the scope of external collaboration while maintaining security boundaries for business communications.
         ADDEDCOMPONENT
-            {"type":"boolean","name":"standards.TeamsExternalAccessPolicy.EnableFederationAccess","label":"Allow communication from trusted organizations"}
-            {"type":"boolean","name":"standards.TeamsExternalAccessPolicy.EnablePublicCloudAccess","label":"Allow user to communicate with Skype users"}
-            {"type":"boolean","name":"standards.TeamsExternalAccessPolicy.EnableTeamsConsumerAccess","label":"Allow communication with unmanaged Teams accounts"}
+            {"type":"switch","name":"standards.TeamsExternalAccessPolicy.EnableFederationAccess","label":"Allow communication from trusted organizations"}
+            {"type":"switch","name":"standards.TeamsExternalAccessPolicy.EnableTeamsConsumerAccess","label":"Allow communication with unmanaged Teams accounts"}
         IMPACT
             Medium Impact
+        ADDEDDATE
+            2024-07-30
         POWERSHELLEQUIVALENT
             Set-CsExternalAccessPolicy
         RECOMMENDEDBY
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'TeamsExternalAccessPolicy'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'TeamsExternalAccessPolicy' -TenantFilter $Tenant -RequiredCapabilities @('MCOSTANDARD', 'MCOEV', 'MCOIMP', 'TEAMS1', 'Teams_Room_Standard')
 
-    $CurrentState = New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Get-CsExternalAccessPolicy' -CmdParams @{Identity = 'Global' }
-    | Select-Object *
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
 
-    if ($null -eq $Settings.EnableFederationAccess) { $Settings.EnableFederationAccess = $false }
-    if ($null -eq $Settings.EnablePublicCloudAccess) { $Settings.EnablePublicCloudAccess = $false }
-    if ($null -eq $Settings.EnableTeamsConsumerAccess) { $Settings.EnableTeamsConsumerAccess = $false }
+    try {
+        $CurrentState = New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Get-CsExternalAccessPolicy' -CmdParams @{Identity = 'Global' } |
+            Select-Object *
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the TeamsExternalAccessPolicy state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
-    $StateIsCorrect = ($CurrentState.EnableFederationAccess -eq $Settings.EnableFederationAccess) -and
-                        ($CurrentState.EnablePublicCloudAccess -eq $Settings.EnablePublicCloudAccess) -and
-                        ($CurrentState.EnableTeamsConsumerAccess -eq $Settings.EnableTeamsConsumerAccess)
+    $EnableFederationAccess = $Settings.EnableFederationAccess ?? $false
+    $EnableTeamsConsumerAccess = $Settings.EnableTeamsConsumerAccess ?? $false
+
+    $StateIsCorrect = ($CurrentState.EnableFederationAccess -eq $EnableFederationAccess) -and
+    ($CurrentState.EnableTeamsConsumerAccess -eq $EnableTeamsConsumerAccess)
 
     if ($Settings.remediate -eq $true) {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $Tenant -message 'External Access Policy already set.' -sev Info
         } else {
-            $cmdparams = @{
+            $cmdParams = @{
                 Identity                  = 'Global'
-                EnableFederationAccess    = $Settings.EnableFederationAccess
-                EnablePublicCloudAccess   = $Settings.EnablePublicCloudAccess
-                EnableTeamsConsumerAccess = $Settings.EnableTeamsConsumerAccess
+                EnableFederationAccess    = $EnableFederationAccess
+                EnableTeamsConsumerAccess = $EnableTeamsConsumerAccess
             }
 
             try {
-                New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Set-CsExternalAccessPolicy' -CmdParams $cmdparams
+                New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Set-CsExternalAccessPolicy' -CmdParams $cmdParams
                 Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Updated External Access Policy' -sev Info
             } catch {
                 $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
@@ -68,11 +77,22 @@ Function Invoke-CIPPStandardTeamsExternalAccessPolicy {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $Tenant -message 'External Access Policy is set correctly.' -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $Tenant -message 'External Access Policy is not set correctly.' -sev Alert
+            Write-StandardsAlert -message 'External Access Policy is not set correctly.' -object $CurrentState -tenant $Tenant -standardName 'TeamsExternalAccessPolicy' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $Tenant -message 'External Access Policy is not set correctly.' -sev Info
         }
     }
 
-    if ($Setings.report -eq $true) {
+    if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'TeamsExternalAccessPolicy' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $Tenant
+
+        $CurrentValue = @{
+            EnableFederationAccess    = $CurrentState.EnableFederationAccess
+            EnableTeamsConsumerAccess = $CurrentState.EnableTeamsConsumerAccess
+        }
+        $ExpectedValue = @{
+            EnableFederationAccess    = $EnableFederationAccess
+            EnableTeamsConsumerAccess = $EnableTeamsConsumerAccess
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.TeamsExternalAccessPolicy' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
     }
 }

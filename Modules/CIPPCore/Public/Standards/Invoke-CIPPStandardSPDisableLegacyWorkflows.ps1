@@ -13,27 +13,39 @@ function Invoke-CIPPStandardSPDisableLegacyWorkflows {
         CAT
             SharePoint Standards
         TAG
-            "lowimpact"
+        EXECUTIVETEXT
+            Disables outdated SharePoint workflow features and classic interface options, encouraging use of modern, more secure and efficient collaboration tools. This helps maintain security standards while guiding users toward current, supported functionality.
         ADDEDCOMPONENT
         IMPACT
             Low Impact
+        ADDEDDATE
+            2024-07-15
         POWERSHELLEQUIVALENT
             Set-SPOTenant -DisableWorkflow2010 \$true -DisableWorkflow2013 \$true -DisableBackToClassic \$true
         RECOMMENDEDBY
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'SPDisableLegacyWorkflows'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'SPDisableLegacyWorkflows' -TenantFilter $Tenant -RequiredCapabilities @('SHAREPOINTWAC', 'SHAREPOINTSTANDARD', 'SHAREPOINTENTERPRISE', 'SHAREPOINTENTERPRISE_EDU', 'ONEDRIVE_BASIC', 'ONEDRIVE_ENTERPRISE')
 
-    $CurrentState = Get-CIPPSPOTenant -TenantFilter $Tenant |
-    Select-Object -Property *
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    try {
+        $CurrentState = Get-CIPPSPOTenant -TenantFilter $Tenant
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the SPDisableLegacyWorkflows state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     $StateIsCorrect = ($CurrentState.StopNew2010Workflows -eq $true) -and
-                      ($CurrentState.StopNew2013Workflows -eq $true) -and
-                      ($CurrentState.DisableBackToClassic -eq $true)
+    ($CurrentState.StopNew2013Workflows -eq $true) -and
+    ($CurrentState.DisableBackToClassic -eq $true)
 
     if ($Settings.remediate -eq $true) {
         if ($StateIsCorrect -eq $true) {
@@ -46,7 +58,7 @@ function Invoke-CIPPStandardSPDisableLegacyWorkflows {
             }
 
             try {
-                Get-CIPPSPOTenant -TenantFilter $Tenant | Set-CIPPSPOTenant -Properties $Properties
+                $CurrentState | Set-CIPPSPOTenant -Properties $Properties
                 Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Successfully disabled Legacy Workflows' -Sev Info
             } catch {
                 $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
@@ -57,13 +69,27 @@ function Invoke-CIPPStandardSPDisableLegacyWorkflows {
 
     if ($Settings.alert -eq $true) {
         if ($StateIsCorrect -eq $true) {
-            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Legacy Workflows are disabled' -Sev Info
+            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'SharePoint Legacy Workflows are disabled' -Sev Info
         } else {
-            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Legacy Workflows are enabled' -Sev Info
+            $Message = 'SharePoint Legacy Workflows is not disabled.'
+            Write-StandardsAlert -message $Message -object $CurrentState -tenant $Tenant -standardName 'SPDisableLegacyWorkflows' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message $Message -Sev Info
         }
     }
 
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'SPDisableLegacyWorkflows' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $Tenant
+
+        $CurrentValue = @{
+            StopNew2010Workflows = $CurrentState.StopNew2010Workflows
+            StopNew2013Workflows = $CurrentState.StopNew2013Workflows
+            DisableBackToClassic = $CurrentState.DisableBackToClassic
+        }
+        $ExpectedValue = @{
+            StopNew2010Workflows = $true
+            StopNew2013Workflows = $true
+            DisableBackToClassic = $true
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.SPDisableLegacyWorkflows' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
     }
 }

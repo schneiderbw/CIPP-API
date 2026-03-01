@@ -3,7 +3,7 @@ function Invoke-ExecWebhookSubscriptions {
     .FUNCTIONALITY
         Entrypoint
     .ROLE
-        Tenant.Alerts.ReadWrite
+        Tenant.Alert.ReadWrite
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
@@ -15,12 +15,12 @@ function Invoke-ExecWebhookSubscriptions {
             if ($Webhook) {
                 Remove-CIPPGraphSubscription -TenantFilter $Webhook.PartitionKey -CIPPID $Webhook.RowKey
                 Remove-AzDataTableEntity -Force @Table -Entity $Webhook
-                Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+                return ([HttpResponseContext]@{
                         StatusCode = [HttpStatusCode]::OK
                         Body       = @{ Results = "Deleted subscription $($Webhook.RowKey) for $($Webhook.PartitionKey)" }
                     })
             } else {
-                Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+                return ([HttpResponseContext]@{
                         StatusCode = [HttpStatusCode]::OK
                         Body       = @{ Results = "Subscription $($Request.Query.WebhookID) not found" }
                     })
@@ -41,7 +41,7 @@ function Invoke-ExecWebhookSubscriptions {
                     $Unsubscribe.EventType = $Webhook.EventType
                 }
                 if ($Webhook.Resource -match 'PartnerCenter') {
-                    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+                    return ([HttpResponseContext]@{
                             StatusCode = [HttpStatusCode]::BadRequest
                             Body       = 'PartnerCenter subscriptions cannot be unsubscribed'
                         })
@@ -49,16 +49,36 @@ function Invoke-ExecWebhookSubscriptions {
                 }
                 Remove-CIPPGraphSubscription @Unsubscribe
                 Remove-AzDataTableEntity -Force @Table -Entity $Webhook
-                Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+                return ([HttpResponseContext]@{
                         StatusCode = [HttpStatusCode]::OK
                         Body       = @{ Results = "Unsubscribed from $($Webhook.Resource) for $($Webhook.PartitionKey)" }
                     })
             } else {
-                Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+                return ([HttpResponseContext]@{
                         StatusCode = [HttpStatusCode]::OK
                         Body       = @{ Results = "Subscription $($Request.Query.WebhookID) not found" }
                     })
             }
+        }
+        'UnsubscribeAll' {
+            $TenantList = Get-Tenants -IncludeErrors
+            $Results = foreach ($tenant in $TenantList) {
+                $TenantFilter = $tenant.defaultDomainName
+                $Subscriptions = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/subscriptions' -tenantid $TenantFilter | Where-Object { $_.notificationUrl -like '*PublicWebhooks*' }
+                "Unsubscribing from all CIPP subscriptions for $TenantFilter - $($Subscriptions.Count) subscriptions found"
+                $Subscriptions | ForEach-Object {
+                    New-GraphPostRequest -uri "https://graph.microsoft.com/beta/subscriptions/$($_.id)" -tenantid $TenantFilter -type DELETE -body {} -Verbose
+                    # get row from table if exists and remove
+                    $Webhook = Get-AzDataTableEntity @Table -Filter "WebhookNotificationUrl eq 'https://graph.microsoft.com/beta/subscriptions/$($_.id)'" -Property PartitionKey, RowKey, ETag
+                    if ($Webhook) {
+                        $null = Remove-AzDataTableEntity -Force @Table -Entity $Webhook
+                    }
+                }
+            }
+            return ([HttpResponseContext]@{
+                    StatusCode = [HttpStatusCode]::OK
+                    Body       = @{ Results = $Results }
+                })
         }
         'Resubscribe' {
             Write-Host "Resubscribing to $($Request.Query.WebhookID)"
@@ -81,7 +101,7 @@ function Invoke-ExecWebhookSubscriptions {
                 } catch {
                     Write-Host $_.Exception.Message
                 }
-                Push-OutputBinding -name Response -value ([HttpResponseContext]@{
+                return ([HttpResponseContext]@{
                         StatusCode = [HttpStatusCode]::OK
                         Body       = @{ Results = $NewSub.message }
                     })
@@ -90,7 +110,7 @@ function Invoke-ExecWebhookSubscriptions {
         default {
             $Table = Get-CIPPTable -TableName webhookTable
             $Subscriptions = Get-AzDataTableEntity @Table
-            Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+            return ([HttpResponseContext]@{
                     StatusCode = [HttpStatusCode]::OK
                     Body       = $Subscriptions
                 })

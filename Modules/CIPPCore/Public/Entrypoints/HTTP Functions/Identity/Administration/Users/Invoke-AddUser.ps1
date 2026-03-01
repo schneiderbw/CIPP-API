@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-AddUser {
+function Invoke-AddUser {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -10,47 +8,83 @@ Function Invoke-AddUser {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = 'AddUser'
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
 
-    $UserObj = $Request.body
+
+    $UserObj = $Request.Body
+
+    if (!$UserObj.tenantFilter) {
+        return ([HttpResponseContext]@{
+                StatusCode = [HttpStatusCode]::BadRequest
+                Body       = [pscustomobject]@{
+                    'Results' = @{
+                        resultText = 'tenantFilter is required to create a user.'
+                        state      = 'error'
+                    }
+                }
+            })
+    }
 
     if ($UserObj.Scheduled.Enabled) {
-        $TaskBody = [pscustomobject]@{
-            TenantFilter  = $UserObj.tenantID
-            Name          = "New user creation: $($UserObj.User)@$($UserObj.Domain)"
-            Command       = @{
-                value = 'New-CIPPUserTask'
-                label = 'New-CIPPUserTask'
+        try {
+            $Username = $UserObj.username ?? $UserObj.mailNickname
+            $TaskBody = [pscustomobject]@{
+                TenantFilter  = $UserObj.tenantFilter
+                Name          = "New user creation: $($Username)@$($UserObj.PrimDomain.value)"
+                Command       = @{
+                    value = 'New-CIPPUserTask'
+                    label = 'New-CIPPUserTask'
+                }
+                Parameters    = [pscustomobject]@{ UserObj = $UserObj }
+                ScheduledTime = $UserObj.Scheduled.date
+                Reference     = $UserObj.reference ?? $null
+                PostExecution = @{
+                    Webhook = [bool]$Request.Body.PostExecution.Webhook
+                    Email   = [bool]$Request.Body.PostExecution.Email
+                    PSA     = [bool]$Request.Body.PostExecution.PSA
+                }
             }
-            Parameters    = [pscustomobject]@{ userobj = $UserObj }
-            ScheduledTime = $UserObj.Scheduled.date
-            PostExecution = @{
-                Webhook = [bool]$Request.Body.PostExecution.Webhook
-                Email   = [bool]$Request.Body.PostExecution.Email
-                PSA     = [bool]$Request.Body.PostExecution.PSA
+            Add-CIPPScheduledTask -Task $TaskBody -hidden $false -DisallowDuplicateName $true -Headers $Headers
+            $body = [pscustomobject] @{
+                'Results' = @("Successfully created scheduled task to create user $($UserObj.DisplayName)")
             }
-        }
-        Add-CIPPScheduledTask -Task $TaskBody -hidden $false -DisallowDuplicateName $true
-        $body = [pscustomobject] @{
-            'Results' = @("Successfully created scheduled task to create user $($UserObj.DisplayName)")
+        } catch {
+            $body = [pscustomobject] @{
+                'Results' = @("Failed to create scheduled task to create user $($UserObj.DisplayName): $($_.Exception.Message)")
+            }
+            $StatusCode = [HttpStatusCode]::InternalServerError
         }
     } else {
-        $CreationResults = New-CIPPUserTask -userobj $UserObj -APIName $APINAME -ExecutingUser $request.headers.'x-ms-client-principal'
-        $body = [pscustomobject] @{
-            'Results'  = $CreationResults.Results
-            'Username' = $CreationResults.username
-            'Password' = $CreationResults.password
-            'CopyFrom' = @{
-                'Success' = $CreationResults.CopyFrom.Success
-                'Error'   = $CreationResults.CopyFrom.Error
+        try {
+            $CreationResults = New-CIPPUserTask -UserObj $UserObj -APIName $APIName -Headers $Headers
+            $body = [pscustomobject] @{
+                'Results'  = @(
+                    $CreationResults.Results[0],
+                    $CreationResults.Results[1],
+                    @{
+                        'resultText' = $CreationResults.Results[2]
+                        'copyField'  = $CreationResults.password
+                        'state'      = 'success'
+                    }
+                )
+                'CopyFrom' = @{
+                    'Success' = $CreationResults.CopyFrom.Success
+                    'Error'   = $CreationResults.CopyFrom.Error
+                }
+                'User'     = $CreationResults.User
             }
+        } catch {
+            $ErrorMessage = $_.TargetObject.Results -join ' '
+            $ErrorMessage = [string]::IsNullOrWhiteSpace($ErrorMessage) ? $_.Exception.Message : $ErrorMessage
+            $body = [pscustomobject] @{
+                'Results' = @($ErrorMessage)
+            }
+            $StatusCode = [HttpStatusCode]::InternalServerError
         }
-
     }
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
+    return ([HttpResponseContext]@{
+            StatusCode = $StatusCode ? $StatusCode : [HttpStatusCode]::OK
             Body       = $Body
         })
 

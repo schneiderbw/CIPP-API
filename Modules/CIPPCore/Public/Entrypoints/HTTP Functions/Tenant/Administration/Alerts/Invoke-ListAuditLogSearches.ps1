@@ -6,37 +6,42 @@ function Invoke-ListAuditLogSearches {
         Tenant.Alert.Read
     #>
     Param($Request, $TriggerMetadata)
+    # Interact with the query parameters
+    $TenantFilter = $Request.Query.tenantFilter
+    $SearchId = $Request.Query.SearchId
+    $Days = $Request.Query.Days
+    $Type = $Request.Query.Type
 
-    if ($Request.Query.TenantFilter) {
-        switch ($Request.Query.Type) {
+    if ($TenantFilter) {
+        switch ($Type) {
             'Searches' {
-                $Results = Get-CippAuditLogSearches -TenantFilter $Request.Query.TenantFilter
+                $Results = Get-CippAuditLogSearches -TenantFilter $TenantFilter
                 $Body = @{
                     Results  = @($Results)
                     Metadata = @{
-                        TenantFilter  = $Request.Query.TenantFilter
+                        TenantFilter  = $TenantFilter
                         TotalSearches = $Results.Count
                     }
                 } | ConvertTo-Json -Depth 10 -Compress
             }
             'SearchResults' {
                 try {
-                    $Results = Get-CippAuditLogSearchResults -TenantFilter $Request.Query.TenantFilter -QueryId $Request.Query.SearchId
+                    $Results = Get-CippAuditLogSearchResults -TenantFilter $TenantFilter -QueryId $SearchId
                 } catch {
                     $Results = @{ Error = $_.Exception.Message }
                 }
                 $Body = @{
                     Results  = @($Results)
                     Metadata = @{
-                        SearchId     = $Request.Query.SearchId
-                        TenantFilter = $Request.Query.TenantFilter
+                        SearchId     = $SearchId
+                        TenantFilter = $TenantFilter
                         TotalResults = $Results.Count
                     }
                 } | ConvertTo-Json -Depth 10 -Compress
             }
             default {
-                if ($Request.Query.Days) {
-                    $Days = $Request.Query.Days
+                if ($Days) {
+                    $Days = $Days
                 } else {
                     $Days = 1
                 }
@@ -62,18 +67,18 @@ function Invoke-ListAuditLogSearches {
                     Results  = @($Results)
                     Metadata = @{
                         StartTime    = $StartTime
-                        TenantFilter = $Request.Query.TenantFilter
+                        TenantFilter = $TenantFilter
                     }
                 } | ConvertTo-Json -Depth 10 -Compress
             }
         }
 
-        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+        return ([HttpResponseContext]@{
                 StatusCode = [HttpStatusCode]::OK
                 Body       = $Body
             })
     } else {
-        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+        return ([HttpResponseContext]@{
                 StatusCode = [HttpStatusCode]::BadRequest
                 Body       = 'TenantFilter is required'
             })

@@ -10,8 +10,9 @@ function Start-CIPPProcessorQueue {
     $QueueItems = Get-CIPPAzDataTableEntity @QueueTable -Filter "PartitionKey eq 'Function'"
 
     foreach ($QueueItem in $QueueItems) {
-        if ($PSCmdlet.ShouldProcess("Processing function $($QueueItem.FunctionName)")) {
-            Write-Information "Running queued function $($QueueItem.FunctionName)"
+        $FunctionName = $QueueItem.FunctionName ?? $QueueItem.RowKey
+        if ($PSCmdlet.ShouldProcess("Processing function $($FunctionName)")) {
+            Write-Information "Running queued function $($FunctionName)"
             if ($QueueItem.Parameters) {
                 try {
                     $Parameters = $QueueItem.Parameters | ConvertFrom-Json -AsHashtable
@@ -21,14 +22,36 @@ function Start-CIPPProcessorQueue {
             } else {
                 $Parameters = @{}
             }
-            if (Get-Command -Name $QueueItem.FunctionName -ErrorAction SilentlyContinue) {
+            if (Get-Command -Name $FunctionName -ErrorAction SilentlyContinue) {
                 try {
-                    Invoke-Command -ScriptBlock { & $QueueItem.FunctionName @Parameters }
+                    # Prepare telemetry metadata
+                    $metadata = @{
+                        FunctionName = $FunctionName
+                        TriggerType  = 'ProcessorQueue'
+                        QueueRowKey  = $QueueItem.RowKey
+                    }
+
+                    # Add parameters info if available
+                    if ($Parameters.Count -gt 0) {
+                        $metadata['ParameterCount'] = $Parameters.Count
+                        # Add common parameters
+                        if ($Parameters.Tenant) {
+                            $metadata['Tenant'] = $Parameters.Tenant
+                        }
+                        if ($Parameters.TenantFilter) {
+                            $metadata['Tenant'] = $Parameters.TenantFilter
+                        }
+                    }
+
+                    # Wrap function execution with telemetry
+
+                    Invoke-Command -ScriptBlock { & $FunctionName @Parameters }
+
                 } catch {
-                    Write-Warning "Failed to run function $($QueueItem.FunctionName). Error: $($_.Exception.Message)"
+                    Write-Warning "Failed to run function $($FunctionName). Error: $($_.Exception.Message)"
                 }
             } else {
-                Write-Warning "Function $($QueueItem.FunctionName) not found"
+                Write-Warning "Function $($FunctionName) not found"
             }
             Remove-AzDataTableEntity -Force @QueueTable -Entity $QueueItem
         }

@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ExecGetLocalAdminPassword {
     <#
     .FUNCTIONALITY
@@ -10,10 +8,10 @@ Function Invoke-ExecGetLocalAdminPassword {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
+    $APIName = $Request.Params.CIPPEndpoint
 
     try {
-        $GraphRequest = Get-CIPPLapsPassword -device $($request.query.guid) -tenantFilter $Request.Query.TenantFilter -APIName $APINAME -ExecutingUser $request.headers.'x-ms-client-principal'
+        $GraphRequest = Get-CIPPLapsPassword -device $($request.body.guid) -tenantFilter $Request.body.TenantFilter -APIName $APINAME -Headers $Request.Headers
         $Body = [pscustomobject]@{'Results' = $GraphRequest }
 
     } catch {
@@ -22,8 +20,7 @@ Function Invoke-ExecGetLocalAdminPassword {
 
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = $Body
         })

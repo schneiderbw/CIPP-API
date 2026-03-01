@@ -13,28 +13,38 @@ function Invoke-CIPPStandardQuarantineRequestAlert {
         CAT
             Defender Standards
         TAG
-            "lowimpact"
+        EXECUTIVETEXT
+            Notifies IT administrators when employees request to release emails that were quarantined for security reasons, enabling oversight of potentially dangerous messages. This helps ensure that legitimate emails are released while maintaining security controls over suspicious content.
         ADDEDCOMPONENT
-            {"type":"input","name":"standards.QuarantineRequestAlert.NotifyUser","label":"E-mail to receive the alert"}
+            {"type":"textField","name":"standards.QuarantineRequestAlert.NotifyUser","label":"E-mail to receive the alert"}
         IMPACT
             Low Impact
+        ADDEDDATE
+            2024-07-15
         POWERSHELLEQUIVALENT
             New-ProtectionAlert and Set-ProtectionAlert
         RECOMMENDEDBY
         UPDATECOMMENTBLOCK
             Run the Tools\Update-StandardsComments.ps1 script to update this comment block
     .LINK
-        https://docs.cipp.app/user-documentation/tenant/standards/edit-standards
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards
     #>
 
     param ($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'QuarantineRequestAlert'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'QuarantineRequestAlert' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
 
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
     $PolicyName = 'CIPP User requested to release a quarantined message'
 
-    $CurrentState = New-ExoRequest -TenantId $Tenant -cmdlet 'Get-ProtectionAlert' -Compliance |
-    Where-Object { $_.Name -eq $PolicyName } |
-    Select-Object -Property *
+    try {
+        $CurrentState = New-ExoRequest -TenantId $Tenant -cmdlet 'Get-ProtectionAlert' -Compliance | Where-Object { $_.Name -eq $PolicyName }
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the QuarantineRequestAlert state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     $StateIsCorrect = ($CurrentState.NotifyUser -contains $Settings.NotifyUser)
 
@@ -42,7 +52,7 @@ function Invoke-CIPPStandardQuarantineRequestAlert {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Quarantine Request Alert is configured correctly' -sev Info
         } else {
-            $cmdparams = @{
+            $cmdParams = @{
                 'NotifyUser'      = $Settings.NotifyUser
                 'Category'        = 'ThreatManagement'
                 'Operation'       = 'QuarantineRequestReleaseMessage'
@@ -52,10 +62,8 @@ function Invoke-CIPPStandardQuarantineRequestAlert {
 
             if ($CurrentState.Name -eq $PolicyName) {
                 try {
-                    $cmdparams += @{
-                        'Identity' = $PolicyName
-                    }
-                    New-ExoRequest -TenantId $Tenant -cmdlet 'Set-ProtectionAlert' -Compliance -cmdparams $cmdparams -UseSystemMailbox $true
+                    $cmdParams['Identity'] = $PolicyName
+                    New-ExoRequest -TenantId $Tenant -cmdlet 'Set-ProtectionAlert' -Compliance -cmdParams $cmdParams -UseSystemMailbox $true
                     Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Successfully configured Quarantine Request Alert' -sev Info
                 } catch {
                     $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
@@ -63,11 +71,10 @@ function Invoke-CIPPStandardQuarantineRequestAlert {
                 }
             } else {
                 try {
-                    $cmdparams += @{
-                        'Name'       = $PolicyName
-                        'ThreatType' = 'Activity'
-                    }
-                    New-ExoRequest -TenantId $Tenant -cmdlet 'New-ProtectionAlert' -Compliance -cmdparams $cmdparams -UseSystemMailbox $true
+                    $cmdParams['name'] = $PolicyName
+                    $cmdParams['ThreatType'] = 'Activity'
+
+                    New-ExoRequest -TenantId $Tenant -cmdlet 'New-ProtectionAlert' -Compliance -cmdParams $cmdParams -UseSystemMailbox $true
                     Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Successfully created Quarantine Request Alert' -sev Info
                 } catch {
                     $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
@@ -81,11 +88,21 @@ function Invoke-CIPPStandardQuarantineRequestAlert {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Quarantine Request Alert is enabled' -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message 'Quarantine Request Alert is disabled' -sev Info
+            $Message = 'Quarantine Request Alert is not enabled.'
+            Write-StandardsAlert -message $Message -object $CurrentState -tenant $Tenant -standardName 'QuarantineRequestAlerts' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message $Message -sev Info
         }
     }
 
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'QuarantineRequestAlert' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $Tenant
+
+        $CurrentValue = @{
+            NotifyUser = @($CurrentState.NotifyUser)
+        }
+        $ExpectedValue = @{
+            NotifyUser = @($Settings.NotifyUser)
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.QuarantineRequestAlert' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
     }
 }

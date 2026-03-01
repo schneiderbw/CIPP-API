@@ -26,9 +26,6 @@ function Push-BECRun {
         } else {
             $sessionid = Get-Random -Minimum 10000 -Maximum 99999
             $operations = @(
-                'New-InboxRule',
-                'Set-InboxRule',
-                'UpdateInboxRules',
                 'Remove-MailboxPermission',
                 'Add-MailboxPermission',
                 'UpdateCalendarDelegation',
@@ -53,7 +50,7 @@ function Push-BECRun {
             $ExtractResult = 'Successfully extracted logs from auditlog'
         }
         Write-Information 'Getting last sign-in'
-        Try {
+        try {
             $URI = "https://graph.microsoft.com/beta/auditLogs/signIns?`$filter=(userId eq '$SuspectUser')&`$top=1&`$orderby=createdDateTime desc"
             $LastSignIn = New-GraphGetRequest -uri $URI -tenantid $TenantFilter -noPagination $true -verbose | Select-Object @{ Name = 'CreatedDateTime'; Expression = { $(($_.createdDateTime | Out-String) -replace '\r\n') } },
             id,
@@ -72,7 +69,7 @@ function Push-BECRun {
         #List all users devices
         $Bytes = [System.Text.Encoding]::UTF8.GetBytes($SuspectUser)
         $base64IdentityParam = [Convert]::ToBase64String($Bytes)
-        Try {
+        try {
             $Devices = New-GraphGetRequest -uri "https://outlook.office365.com:443/adminapi/beta/$($TenantFilter)/mailbox('$($base64IdentityParam)')/MobileDevice/Exchange.GetMobileDeviceStatistics()/?IsEncoded=True" -Tenantid $TenantFilter -scope ExchangeOnline
         } catch {
             $Devices = $null
@@ -96,18 +93,13 @@ function Push-BECRun {
             $PermissionsLog = @()
         }
 
+        Write-Information 'Getting rules'
+
         try {
-            $RulesLog = @(($7dayslog | Where-Object -Property Operations -In 'New-InboxRule', 'Set-InboxRule', 'UpdateInboxRules').AuditData | ConvertFrom-Json -ErrorAction Stop) | ForEach-Object {
-                Write-Information ($_ | ConvertTo-Json)
-                [pscustomobject]@{
-                    ClientIP      = $_.ClientIP
-                    CreationTime  = $_.CreationTime
-                    UserId        = $_.UserId
-                    RuleName      = ($_.OperationProperties | ForEach-Object { if ($_.Name -eq 'RuleName') { $_.Value } })
-                    RuleCondition = ($_.OperationProperties | ForEach-Object { if ($_.Name -eq 'RuleCondition') { $_.Value } })
-                }
-            }
+            $RulesLog = New-ExoRequest -cmdlet 'Get-InboxRule' -tenantid $TenantFilter -cmdParams @{ Mailbox = $Username; IncludeHidden = $true } -Anchor $Username |
+                Where-Object { $_.Name -ne 'Junk E-Mail Rule' -and $_.Name -notlike 'Microsoft.Exchange.OOF.*' }
         } catch {
+            Write-Host 'Failed to get rules: ' + $_.Exception.Message
             $RulesLog = @()
         }
 
@@ -151,10 +143,10 @@ function Push-BECRun {
         Write-Information 'Getting bulk requests'
         $GraphResults = New-GraphBulkRequest -Requests $Requests -tenantid $TenantFilter -asapp $true
 
-        $PasswordChanges = ($GraphResults | Where-Object { $_.id -eq 'Users' }).body.value | Where-Object { $_.lastPasswordChangeDateTime -ge $startDate }
-        $NewUsers = ($GraphResults | Where-Object { $_.id -eq 'Users' }).body.value | Where-Object { $_.createdDateTime -ge $startDate }
-        $MFADevices = ($GraphResults | Where-Object { $_.id -eq 'MFADevices' }).body.value
-        $NewSPs = ($GraphResults | Where-Object { $_.id -eq 'NewSPs' }).body.value
+        $PasswordChanges = (($GraphResults | Where-Object { $_.id -eq 'Users' }).body.value | Where-Object { $_.lastPasswordChangeDateTime -ge $startDate }) ?? @()
+        $NewUsers = (($GraphResults | Where-Object { $_.id -eq 'Users' }).body.value | Where-Object { $_.createdDateTime -ge $startDate }) ?? @()
+        $MFADevices = ($GraphResults | Where-Object { $_.id -eq 'MFADevices' }).body.value ?? @()
+        $NewSPs = ($GraphResults | Where-Object { $_.id -eq 'NewSPs' }).body.value ?? @()
 
 
         $Results = [PSCustomObject]@{
@@ -165,9 +157,9 @@ function Push-BECRun {
             NewRules                 = @($RulesLog)
             MailboxPermissionChanges = @($PermissionsLog)
             NewUsers                 = @($NewUsers)
-            MFADevices               = @($MFADevices)
+            MFADevices               = @($MFADevices | Where-Object { $_.'@odata.type' -ne '#microsoft.graph.passwordAuthenticationMethod' })
             ChangedPasswords         = @($PasswordChanges)
-            ExtractedAt              = (Get-Date).ToString('s')
+            ExtractedAt              = (Get-Date)
             ExtractResult            = $ExtractResult
         }
 
