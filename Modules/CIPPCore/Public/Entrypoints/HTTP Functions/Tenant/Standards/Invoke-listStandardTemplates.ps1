@@ -1,28 +1,46 @@
-using namespace System.Net
-
-Function Invoke-listStandardTemplates {
+function Invoke-listStandardTemplates {
     <#
     .FUNCTIONALITY
-        Entrypoint
+        Entrypoint,AnyTenant
     .ROLE
         Tenant.Standards.Read
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $TriggerMetadata.FunctionName
-
+    # Interact with query parameters or the body of the request.
+    $ID = $Request.Query.id
     $Table = Get-CippTable -tablename 'templates'
-    $Filter = "PartitionKey eq 'StandardsTemplate'"
+    $Filter = "PartitionKey eq 'StandardsTemplateV2'"
     $Templates = (Get-CIPPAzDataTableEntity @Table -Filter $Filter) | ForEach-Object {
-        $data = $_.JSON | ConvertFrom-Json -Depth 100
-        $data | Add-Member -NotePropertyName 'GUID' -NotePropertyValue $_.GUID -Force
-        $data
+        $JSON = $_.JSON -replace '"Action":', '"action":'
+        try {
+            $RowKey = $_.RowKey
+            $Data = $JSON | ConvertFrom-Json -Depth 100 -ErrorAction SilentlyContinue
+
+        } catch {
+            Write-Host "$($RowKey) standard could not be loaded: $($_.Exception.Message)"
+            return
+        }
+        if ($Data) {
+            $Data | Add-Member -NotePropertyName 'GUID' -NotePropertyValue $_.GUID -Force
+            $Data | Add-Member -NotePropertyName 'source' -NotePropertyValue $_.Source -Force
+            $Data | Add-Member -NotePropertyName 'isSynced' -NotePropertyValue (![string]::IsNullOrEmpty($_.SHA)) -Force
+
+            if (!$Data.excludedTenants) {
+                $Data | Add-Member -NotePropertyName 'excludedTenants' -NotePropertyValue @() -Force
+            } else {
+                if ($Data.excludedTenants -and $Data.excludedTenants -ne 'excludedTenants') {
+                    $Data.excludedTenants = @($Data.excludedTenants)
+                } else {
+                    $Data.excludedTenants = @()
+                }
+            }
+            $Data
+        }
     } | Sort-Object -Property templateName
 
-    if ($Request.query.id) { $Templates = $Templates | Where-Object GUID -EQ $Request.query.id }
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    if ($ID) { $Templates = $Templates | Where-Object GUID -EQ $ID }
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = @($Templates)
         })

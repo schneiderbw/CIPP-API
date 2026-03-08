@@ -13,22 +13,29 @@ function Get-CIPPDomainAnalyser {
     Get-CIPPDomainAnalyser -TenantFilter 'AllTenants'
     #>
     [CmdletBinding()]
-    Param([string]$TenantFilter)
+    param([string]$TenantFilter)
     $DomainTable = Get-CIPPTable -Table 'Domains'
 
     # Get all the things
     #Transform the tenantFilter to the GUID.
-    $TenantFilter = (Get-Tenants -TenantFilter $tenantFilter).customerId
     if ($TenantFilter -ne 'AllTenants' -and ![string]::IsNullOrEmpty($TenantFilter)) {
+        $TenantFilter = (Get-Tenants -TenantFilter $tenantFilter).customerId
         $DomainTable.Filter = "TenantGUID eq '{0}'" -f $TenantFilter
+    } else {
+        $Tenants = Get-Tenants -IncludeErrors
     }
-
+    $Domains = Get-CIPPAzDataTableEntity @DomainTable | Where-Object { $_.TenantGUID -in $Tenants.customerId -or $TenantFilter -eq $_.TenantGUID }
     try {
-        # Extract json from table results
-        $Results = foreach ($DomainAnalyserResult in (Get-CIPPAzDataTableEntity @DomainTable).DomainAnalyser) {
+        # Extract json from table results and merge with DkimSelectors from the domain entity
+        $Results = foreach ($Domain in $Domains) {
             try {
-                if (![string]::IsNullOrEmpty($DomainAnalyserResult)) {
-                    $Object = $DomainAnalyserResult | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if (![string]::IsNullOrEmpty($Domain.DomainAnalyser)) {
+                    $Object = $Domain.DomainAnalyser | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    # Add DkimSelectors from the domain entity if available
+                    if (![string]::IsNullOrEmpty($Domain.DkimSelectors)) {
+                        $Selectors = $Domain.DkimSelectors | ConvertFrom-Json -ErrorAction SilentlyContinue
+                        $Object | Add-Member -NotePropertyName 'DkimSelectors' -NotePropertyValue ($Selectors) -Force
+                    }
                     $Object
                 }
             } catch {}

@@ -1,22 +1,23 @@
-using namespace System.Net
-
 function Invoke-ExecOnboardTenant {
     <#
     .FUNCTIONALITY
-        Entrypoint
+        Entrypoint,AnyTenant
     .ROLE
         Tenant.Administration.ReadWrite
     #>
     param($Request, $TriggerMetadata)
 
-    $APIName = 'ExecOnboardTenant'
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+
+
+    # Interact with query parameters or the body of the request.
     $Id = $Request.Body.id
     if ($Id) {
         try {
             $OnboardTable = Get-CIPPTable -TableName 'TenantOnboarding'
 
-            if ($Request.Query.Cancel -eq $true) {
+            if ($Request.Body.Cancel -eq $true) {
                 $TenantOnboarding = Get-CIPPAzDataTableEntity @OnboardTable -Filter "RowKey eq '$Id'"
                 if ($TenantOnboarding) {
                     Remove-AzDataTableEntity -Force @OnboardTable -Entity $TenantOnboarding
@@ -27,9 +28,9 @@ function Invoke-ExecOnboardTenant {
                     $StatusCode = [HttpStatusCode]::NotFound
                 }
             } else {
-                $TenMinutesAgo = (Get-Date).AddMinutes(-10).ToString('yyyy-MM-ddTHH:mm:ssZ')
+                $TenMinutesAgo = (Get-Date).AddMinutes(-10).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
                 $TenantOnboarding = Get-CIPPAzDataTableEntity @OnboardTable -Filter "RowKey eq '$Id' and Timestamp ge datetime'$TenMinutesAgo'"
-                if (!$TenantOnboarding -or [bool]$Request.Query.Retry) {
+                if (!$TenantOnboarding -or [bool]$Request.Body.Retry) {
                     $OnboardingSteps = [PSCustomObject]@{
                         'Step1' = @{
                             'Status'  = 'pending'
@@ -74,6 +75,7 @@ function Invoke-ExecOnboardTenant {
                         id                         = $Id
                         Roles                      = $Request.Body.gdapRoles
                         AddMissingGroups           = $Request.Body.addMissingGroups
+                        IgnoreMissingRoles         = $Request.Body.ignoreMissingRoles
                         AutoMapRoles               = $Request.Body.autoMapRoles
                         StandardsExcludeAllTenants = $Request.Body.standardsExcludeAllTenants
                     }
@@ -82,7 +84,8 @@ function Invoke-ExecOnboardTenant {
                         OrchestratorName = 'OnboardingOrchestrator'
                         Batch            = @($Item)
                     }
-                    $InstanceId = Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
+                    $InstanceId = Start-CIPPOrchestrator -InputObject $InputObject
+                    Write-LogMessage -headers $Headers -API $APIName -message "Onboarding job $Id started" -Sev 'Info' -LogData @{ 'InstanceId' = $InstanceId }
                 }
 
                 $Steps = $TenantOnboarding.OnboardingSteps | ConvertFrom-Json
@@ -104,8 +107,7 @@ function Invoke-ExecOnboardTenant {
         $StatusCode = [HttpStatusCode]::NotFound
         $Results = 'Relationship not found'
     }
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = $Results
         })

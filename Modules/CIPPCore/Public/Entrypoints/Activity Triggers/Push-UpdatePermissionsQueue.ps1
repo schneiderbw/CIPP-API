@@ -16,28 +16,51 @@ function Push-UpdatePermissionsQueue {
         $Table = Get-CIPPTable -TableName cpvtenants
         $CPVRows = Get-CIPPAzDataTableEntity @Table | Where-Object -Property Tenant -EQ $Item.customerId
 
-        if (!$CPVRows -or $ENV:ApplicationID -notin $CPVRows.applicationId) {
+        $Tenant = Get-Tenants -TenantFilter $Item.customerId -IncludeErrors
+
+        if ((!$CPVRows -or $env:ApplicationID -notin $CPVRows.applicationId) -and $Tenant.delegatedPrivilegeStatus -ne 'directTenant') {
             Write-LogMessage -tenant $Item.defaultDomainName -tenantId $Item.customerId -message 'A New tenant has been added, or a new CIPP-SAM Application is in use' -Sev 'Warn' -API 'NewTenant'
             Write-Information 'Adding CPV permissions'
             Set-CIPPCPVConsent -Tenantfilter $Item.customerId
             $DomainRefreshRequired = $true
         }
         Write-Information 'Updating permissions'
-        Add-CIPPApplicationPermission -RequiredResourceAccess 'CIPPDefaults' -ApplicationId $ENV:ApplicationID -tenantfilter $Item.customerId
-        Add-CIPPDelegatedPermission -RequiredResourceAccess 'CIPPDefaults' -ApplicationId $ENV:ApplicationID -tenantfilter $Item.customerId
-        Write-LogMessage -tenant $Item.defaultDomainName -tenantId $Item.customerId -message "Updated permissions for $($Item.displayName)" -Sev 'Info' -API 'UpdatePermissionsQueue'
+        $AppResults = Add-CIPPApplicationPermission -RequiredResourceAccess 'CIPPDefaults' -ApplicationId $env:ApplicationID -tenantfilter $Item.customerId
+        $DelegatedResults = Add-CIPPDelegatedPermission -RequiredResourceAccess 'CIPPDefaults' -ApplicationId $env:ApplicationID -tenantfilter $Item.customerId
 
-        Write-Information 'Pushing CIPP-SAM admin roles'
-        Set-CIPPSAMAdminRoles -TenantFilter $Item.customerId
+        # Check for permission failures (excluding service principal creation failures)
+        $AllResults = @($AppResults) + @($DelegatedResults)
+        $PermissionFailures = $AllResults | Where-Object { 
+            $_ -like '*Failed*' -and 
+            $_ -notlike '*Failed to create service principal*'
+        }
+
+        if ($PermissionFailures) {
+            $Status = 'Failed'
+            $FailureMessage = ($PermissionFailures -join '; ')
+            Write-LogMessage -tenant $Item.defaultDomainName -tenantId $Item.customerId -message "Permission update completed with failures for $($Item.displayName): $FailureMessage" -Sev 'Warn' -API 'UpdatePermissionsQueue'
+        } else {
+            $Status = 'Success'
+            Write-LogMessage -tenant $Item.defaultDomainName -tenantId $Item.customerId -message "Updated permissions for $($Item.displayName)" -Sev 'Info' -API 'UpdatePermissionsQueue'
+        }
+
+        if ($Item.defaultDomainName -ne 'PartnerTenant') {
+            Write-Information 'Pushing CIPP-SAM admin roles'
+            Set-CIPPSAMAdminRoles -TenantFilter $Item.customerId
+        }
 
         $Table = Get-CIPPTable -TableName cpvtenants
         $unixtime = [int64](([datetime]::UtcNow) - (Get-Date '1/1/1970')).TotalSeconds
         $GraphRequest = @{
             LastApply     = "$unixtime"
-            applicationId = "$($ENV:ApplicationID)"
+            LastStatus    = "$Status"
+            applicationId = "$($env:ApplicationID)"
             Tenant        = "$($Item.customerId)"
             PartitionKey  = 'Tenant'
             RowKey        = "$($Item.customerId)"
+        }
+        if ($PermissionFailures) {
+            $GraphRequest.LastError = $FailureMessage
         }
         Add-CIPPAzDataTableEntity @Table -Entity $GraphRequest -Force
 
@@ -49,5 +72,6 @@ function Push-UpdatePermissionsQueue {
         }
     } catch {
         Write-Information "Error updating permissions for $($Item.displayName)"
+        Write-LogMessage -tenant $Item.defaultDomainName -tenantId $Item.customerId -message "Error updating permissions for $($Item.displayName) - $($_.Exception.Message)" -Sev 'Error' -API 'UpdatePermissionsQueue'
     }
 }
