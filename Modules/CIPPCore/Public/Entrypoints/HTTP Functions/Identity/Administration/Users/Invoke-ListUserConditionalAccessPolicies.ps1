@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ListUserConditionalAccessPolicies {
     <#
     .FUNCTIONALITY
@@ -9,16 +7,10 @@ Function Invoke-ListUserConditionalAccessPolicies {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
-
-
-    # Write to the Azure Functions log stream.
-    Write-Host 'PowerShell HTTP trigger function processed a request.'
+    # XXX - Unused endpoint?
 
     # Interact with query parameters or the body of the request.
-    $TenantFilter = $Request.Query.TenantFilter
+    $TenantFilter = $Request.Query.tenantFilter
     $UserID = $Request.Query.UserID
 
     try {
@@ -30,22 +22,21 @@ Function Invoke-ListUserConditionalAccessPolicies {
         $ConditionalAccessWhatIfDefinition = @{
             'conditionalAccessWhatIfSubject'    = @{
                 '@odata.type' = '#microsoft.graph.userSubject'
-                'userId'      = "$userId"
+                'userId'      = "$UserID"
             }
             'conditionalAccessContext'          = $CAContext
             'conditionalAccessWhatIfConditions' = @{}
         }
-        $JSONBody = $ConditionalAccessWhatIfDefinition | ConvertTo-Json -Depth 10
+        $JSONBody = ConvertTo-Json -Depth 10 -InputObject $ConditionalAccessWhatIfDefinition -Compress
 
-        $GraphRequest = (New-GraphPOSTRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/evaluate' -tenantid $tenantFilter -type POST -body $JsonBody -AsApp $true).value
+        $GraphRequest = (New-GraphPostRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/evaluate' -tenantid $TenantFilter -type POST -body $JsonBody -AsApp $true).value
     } catch {
         $GraphRequest = @{}
     }
 
     Write-Host $GraphRequest
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = @($GraphRequest)
         })

@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ExecCaCheck {
+function Invoke-ExecCaCheck {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -9,52 +7,48 @@ Function Invoke-ExecCaCheck {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
-
-    $Tenant = $request.body.tenantFilter
-    $UserID = $request.body.userId.value
-    if ($Request.body.IncludeApplications.value) {
-        $IncludeApplications = $Request.body.IncludeApplications.value
+    $Tenant = $Request.Body.tenantFilter
+    $UserID = $Request.Body.userID.value
+    if ($Request.Body.IncludeApplications.value) {
+        $IncludeApplications = $Request.Body.IncludeApplications.value
     } else {
         $IncludeApplications = '67ad5377-2d78-4ac2-a867-6300cda00e85'
     }
-    $results = try {
+    $Results = try {
         $CAContext = @{
-            '@odata.type'         = '#microsoft.graph.whatIfApplicationContext'
+            '@odata.type'         = '#microsoft.graph.applicationContext'
             'includeApplications' = @($IncludeApplications)
         }
         $ConditionalAccessWhatIfDefinition = @{
-            'conditionalAccessWhatIfSubject'    = @{
-                '@odata.type' = '#microsoft.graph.userSubject'
-                'userId'      = "$userId"
+            'signInIdentity'   = @{
+                '@odata.type' = '#microsoft.graph.userSignIn'
+                'userId'      = "$UserID"
             }
-            'conditionalAccessContext'          = $CAContext
-            'conditionalAccessWhatIfConditions' = @{}
+            'signInContext'    = $CAContext
+            'signInConditions' = @{}
         }
-        $whatIfConditions = $ConditionalAccessWhatIfDefinition.conditionalAccessWhatIfConditions
+        $whatIfConditions = $ConditionalAccessWhatIfDefinition.signInConditions
         if ($Request.body.UserRiskLevel) { $whatIfConditions.userRiskLevel = $Request.body.UserRiskLevel.value }
         if ($Request.body.SignInRiskLevel) { $whatIfConditions.signInRiskLevel = $Request.body.SignInRiskLevel.value }
         if ($Request.body.ClientAppType) { $whatIfConditions.clientAppType = $Request.body.ClientAppType.value }
         if ($Request.body.DevicePlatform) { $whatIfConditions.devicePlatform = $Request.body.DevicePlatform.value }
         if ($Request.body.Country) { $whatIfConditions.country = $Request.body.Country.value }
-        if ($Request.body.IpAddress) { $whatIfConditions.ipAddress = $Request.body.IpAddress.value }
+        if ($Request.body.IpAddress) { $whatIfConditions.ipAddress = $Request.body.IpAddress }
+        if ($Request.body.authenticationFlow) { $whatIfConditions.authenticationFlow = @{ transferMethod = $Request.body.authenticationFlow.value } }
 
         $JSONBody = $ConditionalAccessWhatIfDefinition | ConvertTo-Json -Depth 10
         Write-Host $JSONBody
         $Request = New-GraphPOSTRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/evaluate' -tenantid $tenant -type POST -body $JsonBody -AsApp $true
         $Request
+        $StatusCode = [HttpStatusCode]::OK
     } catch {
         "Failed to execute check: $($_.Exception.Message)"
+        $StatusCode = [HttpStatusCode]::InternalServerError
     }
 
-    $body = [pscustomobject]@{'Results' = $results }
-
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
-            Body       = $body
+    return ([HttpResponseContext]@{
+            StatusCode = $StatusCode
+            Body       = @{'Results' = $Results }
         })
 
 }
