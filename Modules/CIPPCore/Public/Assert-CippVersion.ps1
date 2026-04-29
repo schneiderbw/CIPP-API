@@ -10,18 +10,18 @@ function Assert-CippVersion {
     Local version of CIPP frontend
 
     #>
-    Param($CIPPVersion)
-    $APIVersion = (Get-Content 'version_latest.txt' -Raw).trim()
+    param($CIPPVersion)
+    $APIVersion = (Get-Content -Path (Join-Path $env:CIPPRootPath 'version_latest.txt')).trim()
 
-    $RemoteAPIVersion = (Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/KelvinTegelaar/CIPP-API/master/version_latest.txt').trim()
-    $RemoteCIPPVersion = (Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/KelvinTegelaar/CIPP/master/public/version_latest.txt').trim()
+    $RemoteAPIVersion = (Invoke-CIPPRestMethod -Uri 'https://raw.githubusercontent.com/KelvinTegelaar/CIPP-API/master/version_latest.txt').trim()
+    $RemoteCIPPVersion = (Invoke-CIPPRestMethod -Uri 'https://raw.githubusercontent.com/KelvinTegelaar/CIPP/main/public/version.json').version
 
     [PSCustomObject]@{
         LocalCIPPVersion     = $CIPPVersion
         RemoteCIPPVersion    = $RemoteCIPPVersion
         LocalCIPPAPIVersion  = $APIVersion
         RemoteCIPPAPIVersion = $RemoteAPIVersion
-        OutOfDateCIPP        = ([version]$RemoteCIPPVersion -gt [version]$CIPPVersion)
-        OutOfDateCIPPAPI     = ([version]$RemoteAPIVersion -gt [version]$APIVersion)
+        OutOfDateCIPP        = ([semver]$RemoteCIPPVersion -gt [semver]$CIPPVersion)
+        OutOfDateCIPPAPI     = ([semver]$RemoteAPIVersion -gt [semver]$APIVersion)
     }
 }
