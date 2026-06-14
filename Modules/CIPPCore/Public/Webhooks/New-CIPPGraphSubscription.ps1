@@ -8,7 +8,7 @@ function New-CIPPGraphSubscription {
         $Resource,
         $EventType,
         $APIName = 'Create Webhook',
-        $ExecutingUser,
+        $Headers,
         [Switch]$Recreate,
         [switch]$PartnerCenter
     )
@@ -37,7 +37,7 @@ function New-CIPPGraphSubscription {
                 WebhookEvents = @($EventList)
             }
             try {
-                $EventCompare = Compare-Object $EventList ($MatchedWebhook.EventType | ConvertFrom-Json)
+                $EventCompare = Compare-Object $EventList ($MatchedWebhook.EventType | ConvertFrom-Json -ErrorAction Stop)
             } catch {
                 $EventCompare = $false
             }
@@ -68,14 +68,14 @@ function New-CIPPGraphSubscription {
                         WebhookNotificationUrl = [string]$Body.WebhookUrl
                     }
                     $null = Add-CIPPAzDataTableEntity @WebhookTable -Entity $WebhookRow -Force
-                    Write-LogMessage -user $ExecutingUser -API $APIName -message "$Action Partner Center Webhook subscription" -Sev 'Info' -tenant 'PartnerTenant'
+                    Write-LogMessage -headers $Headers -API $APIName -message "$Action Partner Center Webhook subscription" -Sev 'Info' -tenant 'PartnerTenant'
                     return "$Action Partner Center Webhook subscription"
                 } else {
-                    Write-LogMessage -user $ExecutingUser -API $APIName -message 'Existing Partner Center Webhook subscription found' -Sev 'Info' -tenant 'PartnerTenant'
+                    Write-LogMessage -headers $Headers -API $APIName -message 'Existing Partner Center Webhook subscription found' -Sev 'Info' -tenant 'PartnerTenant'
                     return 'Existing Partner Center Webhook subscription found'
                 }
             } catch {
-                Write-LogMessage -user $ExecutingUser -API $APIName -message "Failed to create Partner Center Webhook Subscription: $($_.Exception.Message)" -Sev 'Error' -tenant 'PartnerTenant'
+                Write-LogMessage -headers $Headers -API $APIName -message "Failed to create Partner Center Webhook Subscription: $($_.Exception.Message)" -Sev 'Error' -tenant 'PartnerTenant'
                 return "Failed to create Partner Webhook Subscription: $($_.Exception.Message)"
             }
 
@@ -84,7 +84,7 @@ function New-CIPPGraphSubscription {
             $WebhookFilter = "PartitionKey eq '$($TenantFilter)'"
             $ExistingWebhooks = Get-CIPPAzDataTableEntity @WebhookTable -Filter $WebhookFilter
             $MatchedWebhook = $ExistingWebhooks | Where-Object { $_.Resource -eq $Resource }
-            if (($MatchedWebhook | Measure-Object).count -eq 0 -or $Recreate.IsPresent) {
+            if (($MatchedWebhook | Measure-Object).Count -eq 0 -or $Recreate.IsPresent) {
                 $expiredate = (Get-Date).AddDays(1).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
                 $params = @{
                     changeType         = $TypeofSubscription
@@ -93,9 +93,12 @@ function New-CIPPGraphSubscription {
                     expirationDateTime = $expiredate
                 } | ConvertTo-Json
 
+                if ($BaseURL -match 'localhost' -or $BaseURL -match '127.0.0.1') {
+                    return 'Cannot create graph subscription for local development'
+                }
 
                 $GraphRequest = New-GraphPostRequest -uri 'https://graph.microsoft.com/beta/subscriptions' -tenantid $TenantFilter -type POST -body $params -verbose
-                #If creation is succesfull, we store the GUID in the storage table webhookTable to make sure we can check against this later on.
+                #If creation is successful, we store the GUID in the storage table webhookTable to make sure we can check against this later on.
                 #We store the GUID as rowkey, the event type, the resource, and the expiration date as properties, we also add the Tenant name so we can easily find this later on.
                 #We don't store the return, because Ms decided that a renewal or re-authenticate does not change the url, but does change the id...
                 $WebhookRow = @{
@@ -111,14 +114,49 @@ function New-CIPPGraphSubscription {
                 $null = Add-CIPPAzDataTableEntity @WebhookTable -Entity $WebhookRow
                 #todo: add remove webhook function, add check webhook function, add list webhooks function
                 #add refresh webhook function based on table.
-                Write-LogMessage -user $ExecutingUser -API $APIName -message "Created Graph Webhook subscription for $($TenantFilter)" -Sev 'Info' -tenant $TenantFilter
+                Write-LogMessage -headers $Headers -API $APIName -message "Created Graph Webhook subscription for $($TenantFilter)" -Sev 'Info' -tenant $TenantFilter
+                return "Created Webhook subscription for $($TenantFilter)"
             } else {
-                Write-LogMessage -user $ExecutingUser -API $APIName -message "Existing Graph Webhook subscription for $($TenantFilter) found" -Sev 'Info' -tenant $TenantFilter
+                # Check Graph directly for subscriptions matching this resource
+                $ExistingSubs = @(New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/subscriptions' -tenantid $TenantFilter)
+                $MatchingSubs = @($ExistingSubs | Where-Object { $_.notificationUrl -match [regex]::Escape("https://$BaseURL/API/PublicWebhooks") -and $_.resource -eq $Resource } | Sort-Object -Property expirationDateTime -Descending)
+
+                # Keep the newest subscription, delete the rest from Graph and the table
+                $KeptSub = $MatchingSubs | Select-Object -First 1
+                $Duplicates = $MatchingSubs | Select-Object -Skip 1
+
+                foreach ($Dup in $Duplicates) {
+                    try {
+                        New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/subscriptions/$($Dup.id)" -tenantid $TenantFilter -type DELETE
+                        Write-LogMessage -headers $Headers -API $APIName -message "Deleted duplicate Graph Webhook subscription $($Dup.id) for $($TenantFilter)" -Sev 'Warning' -tenant $TenantFilter
+                    } catch {
+                        Write-LogMessage -headers $Headers -API $APIName -message "Failed to delete duplicate Graph Webhook subscription $($Dup.id): $($_.Exception.Message)" -Sev 'Warning' -tenant $TenantFilter
+                    }
+                    # Remove the corresponding table row by SubscriptionID
+                    $StaleRow = $ExistingWebhooks | Where-Object { $_.SubscriptionID -eq $Dup.id }
+                    foreach ($Row in $StaleRow) {
+                        Remove-AzDataTableEntity @WebhookTable -Entity $Row -Force
+                        Write-LogMessage -headers $Headers -API $APIName -message "Removed stale webhook table entry (RowKey $($Row.RowKey)) for $($TenantFilter)" -Sev 'Warning' -tenant $TenantFilter
+                    }
+                }
+
+                # Remove any remaining table rows whose SubscriptionID doesn't match the kept Graph subscription
+                $ExistingWebhooks | Where-Object { $KeptSub -and $_.SubscriptionID -ne $KeptSub.id } | ForEach-Object {
+                    try {
+                        Remove-AzDataTableEntity @WebhookTable -Entity $_ -Force
+                        Write-LogMessage -headers $Headers -API $APIName -message "Removed orphaned webhook table entry (RowKey $($_.RowKey)) for $($TenantFilter)" -Sev 'Warning' -tenant $TenantFilter
+                    } catch {
+                        # Entity may have already been removed in the duplicate cleanup pass
+                    }
+                }
+
+                Write-LogMessage -headers $Headers -API $APIName -message "Existing Graph Webhook subscription for $($TenantFilter) found" -Sev 'Info' -tenant $TenantFilter
+                return "Existing Webhook subscription for $($TenantFilter) found"
             }
         }
-        return "Created Webhook subscription for $($TenantFilter)"
+
     } catch {
-        Write-LogMessage -user $ExecutingUser -API $APIName -message "Failed to create Webhook Subscription: $($_.Exception.Message)" -Sev 'Error' -tenant $TenantFilter
-        Return "Failed to create Webhook Subscription for $($TenantFilter): $($_.Exception.Message)"
+        Write-LogMessage -headers $Headers -API $APIName -message "Failed to create Webhook Subscription: $($_.Exception.Message)" -Sev 'Error' -tenant $TenantFilter
+        return "Failed to create Webhook Subscription for $($TenantFilter): $($_.Exception.Message)"
     }
 }
