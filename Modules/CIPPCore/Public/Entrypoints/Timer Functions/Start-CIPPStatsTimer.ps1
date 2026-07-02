@@ -5,26 +5,96 @@ function Start-CIPPStatsTimer {
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
     param()
+
     #These stats are sent to a central server to help us understand how many tenants are using the product, and how many are using the latest version, this information allows the CIPP team to make decisions about what features to support, and what features to deprecate.
-    #We will never ship any data that is related to your instance, all we care about is the number of tenants, and the version of the API you are running, and if you completed setup.
+
 
     if ($PSCmdlet.ShouldProcess('Start-CIPPStatsTimer', 'Starting CIPP Stats Timer')) {
-        if ($ENV:ApplicationID -ne 'LongApplicationID') {
+        if ($env:ApplicationID -ne 'LongApplicationID') {
             $SetupComplete = $true
         }
         $TenantCount = (Get-Tenants -IncludeAll).count
 
-        Set-Location (Get-Item $PSScriptRoot).Parent.FullName
-        $APIVersion = Get-Content 'version_latest.txt' | Out-String
+
+        $APIVersion = if ($env:CIPPNG -eq 'true') {
+            $env:APP_VERSION
+        } else {
+            Get-Content (Join-Path $env:CIPPRootPath 'version_latest.txt') | Out-String
+        }
+        $Table = Get-CIPPTable -TableName Extensionsconfig
+        try {
+            $RawExt = (Get-CIPPAzDataTableEntity @Table).config | ConvertFrom-Json -Depth 10 -ErrorAction Stop
+        } catch {
+            $RawExt = @{}
+        }
+
+        $ConfigTable = Get-CIPPTable -tablename 'Config'
+        $FunctionOffloading = (Get-CIPPAzDataTableEntity @ConfigTable -Filter "RowKey eq 'OffloadFunctions' and PartitionKey eq 'OffloadFunctions'").state
+        $OffloadingEnabled = $false
+        [bool]::TryParse($FunctionOffloading, [ref]$OffloadingEnabled) | Out-Null
+        $CIPPNG = $env:CIPPNG -eq 'true'
+
+        # Get counts of various entities across all tenants
+        $counts = Get-CIPPDbItem -TenantFilter AllTenants -CountsOnly
+        $userCount = ($counts | Where-Object { $_.RowKey -eq 'Users-Count' } | Measure-Object -Property DataCount -Sum).Sum
+        $deviceCount = ($counts | Where-Object { $_.RowKey -eq 'Devices-Count' } | Measure-Object -Property DataCount -Sum).Sum
+        $groupsCount = ($counts | Where-Object { $_.RowKey -eq 'Groups-Count' } | Measure-Object -Property DataCount -Sum).Sum
+        $managedDevicesCount = ($counts | Where-Object { $_.RowKey -eq 'ManagedDevices-Count' } | Measure-Object -Property DataCount -Sum).Sum
+        $policyCount = ($counts | Where-Object { $_.RowKey -match 'Intune' -and $_.RowKey -match 'Policies|Policy' } | Measure-Object -Property DataCount -Sum).Sum
+        $deployedApps = ($counts | Where-Object { $_.RowKey -eq 'IntuneApplications-Count' } | Measure-Object -Property DataCount -Sum).Sum
+        $ReportsTable = Get-CippTable -tablename 'ReportBuilderTemplates'
+        $CustomReportCount = (Get-CIPPAzDataTableEntity @ReportsTable -Filter "PartitionKey eq 'ReportBuilderTemplates'").count
+        $uniqueStandardsApplied = Get-CIPPStatsUniqueStandardsApplied
+        $driftStandardsCount = Get-CIPPStatsDriftStandardsCount
+        $mobileEnrollment = Get-CIPPStatsMobileEnrollment
+
+        # Feature flags
+        $FeatureFlags = @{}
+        Get-CIPPFeatureFlag | Select-Object -Property Id, Enabled | ForEach-Object {
+            $FeatureFlags[$_.Id] = $_.Enabled
+        }
 
         $SendingObject = [PSCustomObject]@{
-            rgid                = $env:WEBSITE_SITE_NAME
-            SetupComplete       = $SetupComplete
-            RunningVersionAPI   = $APIVersion.trim()
-            CountOfTotalTenants = $tenantcount
-            uid                 = $env:TenantID
+            rgid                   = $env:WEBSITE_SITE_NAME
+            SetupComplete          = $SetupComplete
+            Hosted                 = $env:CIPP_HOSTED -eq 'true'
+            CIPPNG                 = $CIPPNG
+            OffloadingEnabled      = $OffloadingEnabled
+            RunningVersionAPI      = $APIVersion.trim()
+            CountOfTotalTenants    = $TenantCount
+            uid                    = $env:TenantID
+            UserCount              = $userCount
+            DeviceCount            = $deviceCount
+            GroupsCount            = $groupsCount
+            ManagedDevicesCount    = $managedDevicesCount
+            PolicyCount            = $policyCount
+            UniqueStandardsApplied = $uniqueStandardsApplied
+            DriftStandardsCount    = $driftStandardsCount
+            MobileEnrollment       = $mobileEnrollment
+            DeployedApps           = $deployedApps
+            CustomReportCount      = $CustomReportCount
+            CIPPAPI                = $RawExt.CIPPAPI.Enabled
+            Hudu                   = $RawExt.Hudu.Enabled
+            Sherweb                = $RawExt.Sherweb.Enabled
+            Gradient               = $RawExt.Gradient.Enabled
+            NinjaOne               = $RawExt.NinjaOne.Enabled
+            haloPSA                = $RawExt.haloPSA.Enabled
+            HIBP                   = $RawExt.HIBP.Enabled
+            PWPush                 = $RawExt.PWPush.Enabled
+            CFZTNA                 = $RawExt.CFZTNA.Enabled
+            GitHub                 = $RawExt.GitHub.Enabled
+            BestPracticeAnalyser   = $FeatureFlags.BestPracticeAnalyser
+            SuperAdminNG           = $FeatureFlags.SuperAdminNG
+            CopilotAI              = $FeatureFlags.CopilotAI
+            MCPServer              = $FeatureFlags.MCPServer
         } | ConvertTo-Json
 
-        Invoke-RestMethod -Uri 'https://management.cipp.app/api/stats' -Method POST -Body $SendingObject -ContentType 'application/json'
+        try {
+            Invoke-CIPPRestMethod -Uri 'https://management.cipp.app/api/stats' -Method POST -Body $SendingObject -ContentType 'application/json'
+        } catch {
+            $rand = Get-Random -Minimum 0.5 -Maximum 5.5
+            Start-Sleep -Seconds $rand
+            Invoke-CIPPRestMethod -Uri 'https://management.cipp.app/api/stats' -Method POST -Body $SendingObject -ContentType 'application/json'
+        }
     }
 }
