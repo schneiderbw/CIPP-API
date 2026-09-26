@@ -1,65 +1,52 @@
 function Get-DefenderTvmRaw {
     <#
     .SYNOPSIS
-        Fetch Defender TVM SoftwareVulnerabilitiesByMachine with paging.
-    .PARAMETER TenantId
-        Microsoft Entra tenant id to query.
-    .PARAMETER MaxPages
-        Optional page cap (0 = no cap).
+        Stream Defender TVM software-vulnerabilities-per-device via the export (gzip files) API.
+    .DESCRIPTION
+        Uses the "via files" export only: cached SAS URLs (Get-DefenderTvmExportUrls) to GZIP
+        multiline-JSON files, stream-decompressed one record at a time. Peak memory is ~one record
+        plus the consumer's aggregate, independent of tenant size. Pass -Stream to emit to the
+        pipeline (the fold consumers do); without it, records are buffered into a list.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$TenantId,
-        [int]$MaxPages = 0
+        [switch]$Stream
     )
 
-    $scope = 'https://api.securitycenter.microsoft.com/.default'
-    $uri   = 'https://api.securitycenter.microsoft.com/api/machines/SoftwareVulnerabilitiesByMachine'
-    $all   = New-Object System.Collections.Generic.List[object]
-    $page  = 0
-
     try {
-        do {
-            Write-LogMessage -API 'DefenderTVM' -tenant $TenantId -message "Fetching page $($page + 1)" -Sev 'Debug'
+        $Files = Get-DefenderTvmExportUrls -TenantId $TenantId
+        if (-not $Files -or $Files.Count -eq 0) {
+            Write-LogMessage -API 'DefenderTVM' -tenant $TenantId -message 'No export files returned from Defender TVM' -Sev 'Warning'
+            return
+        }
 
-            $resp = New-GraphGetRequest -tenantid $TenantId -uri $uri -scope $scope
-
-            if ($resp -is [System.Collections.IDictionary]) {
-                if ($resp.ContainsKey('value')) {
-                    $rows     = $resp.value
-                    $nextLink = $resp.'@odata.nextLink'
-                    if ($rows) { $all.AddRange($rows) }
-                    $uri = $nextLink
-                    Write-LogMessage -API 'DefenderTVM' -tenant $TenantId -message "Page $($page + 1): $($rows.Count) records" -Sev 'Debug'
+        $Buffer = if ($Stream) { $null } else { [System.Collections.Generic.List[object]]::new() }
+        $Client = [System.Net.Http.HttpClient]::new()
+        $Client.Timeout = [TimeSpan]::FromMinutes(30)
+        try {
+            foreach ($Url in $Files) {
+                $NetStream = $Client.GetStreamAsync($Url).GetAwaiter().GetResult()
+                $Gzip = [System.IO.Compression.GZipStream]::new($NetStream, [System.IO.Compression.CompressionMode]::Decompress)
+                $Reader = [System.IO.StreamReader]::new($Gzip)
+                try {
+                    while ($null -ne ($Line = $Reader.ReadLine())) {
+                        if (-not $Line) { continue }
+                        $Record = $Line | ConvertFrom-Json
+                        if ($Stream) { $Record } else { $Buffer.Add($Record) }
+                    }
+                } finally {
+                    $Reader.Dispose(); $Gzip.Dispose(); $NetStream.Dispose()
                 }
-                else {
-                    $all.Add($resp)
-                    $uri = $null
-                }
             }
-            elseif ($resp -is [System.Collections.IEnumerable] -and $resp -isnot [string]) {
-                $all.AddRange($resp)
-                $uri = $null
-            }
-            else {
-                $all.Add($resp)
-                $uri = $null
-            }
+        } finally {
+            $Client.Dispose()
+        }
 
-            $page++
-
-            if ($page -gt 100) {
-                Write-LogMessage -API 'DefenderTVM' -tenant $TenantId -message "Reached 100 page safety limit — stopping" -Sev 'Warning'
-                break
-            }
-
-        } while ($uri -and ($MaxPages -eq 0 -or $page -lt $MaxPages))
-
-        Write-LogMessage -API 'DefenderTVM' -tenant $TenantId -message "Defender TVM fetch complete: $($all.Count) records across $page page(s)" -Sev 'Info'
-        return $all
-    }
-    catch {
-        Write-LogMessage -API 'DefenderTVM' -tenant $TenantId -message "Error on page $page`: $($_.Exception.Message)" -Sev 'Error'
+        if (-not $Stream) { return $Buffer }
+    } catch {
+        $Sev = if (Test-CIPPCacheCapabilityError -Message $_.Exception.Message) { 'Debug' } else { 'Error' }
+        Write-LogMessage -API 'DefenderTVM' -tenant $TenantId -message "Error: $($_.Exception.Message)" -Sev $Sev
         throw
     }
 }

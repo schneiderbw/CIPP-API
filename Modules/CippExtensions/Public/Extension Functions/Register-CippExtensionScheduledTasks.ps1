@@ -22,7 +22,7 @@ function Register-CIPPExtensionScheduledTasks {
     foreach ($Task in $ScheduledTasks) {
         Write-Information "Removing legacy task: $($Task.Name) for tenant $($Task.Tenant)"
         $Entity = $Task | Select-Object -Property PartitionKey, RowKey
-        Remove-AzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
+        Remove-CIPPAzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
     }
     $ScheduledTasks = @() # Clear the list since we removed them all
 
@@ -31,6 +31,18 @@ function Register-CIPPExtensionScheduledTasks {
         $ExtensionConfig = $Config.$Extension
         if ($ExtensionConfig.Enabled -eq $true -or $Extension -eq 'CustomData') {
             if ($Extension -eq 'Sherweb') {
+                # Mapping a tenant for CSP licensing must not enrol it into daily migration checks.
+                # Only schedule migration tasks when automated migration is explicitly enabled; when
+                # it is off, clean up any tasks that were previously created so they stop firing.
+                if ($ExtensionConfig.AutoMigrations -ne $true) {
+                    $SherwebMigTasks | ForEach-Object {
+                        Write-Information "Sherweb automated migration disabled: Cleaning up scheduled task $($_.Name) for tenant $($_.Tenant)"
+                        $Entity = $_ | Select-Object -Property PartitionKey, RowKey
+                        Remove-CIPPAzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
+                    }
+                    $SherwebMigTasks = @() # Clear the list since we removed them all
+                    continue
+                }
                 # Sherweb migration tasks - schedule per mapped tenant
                 $SherwebMappings = Get-CIPPAzDataTableEntity @MappingsTable -Filter "PartitionKey eq 'SherwebMapping'"
                 foreach ($Mapping in $SherwebMappings) {
@@ -143,13 +155,13 @@ function Register-CIPPExtensionScheduledTasks {
             $PushTasks | Where-Object { $_.SyncType -eq $Extension } | ForEach-Object {
                 Write-Information "Extension Disabled: Cleaning up scheduled task $($_.Name) for tenant $($_.Tenant)"
                 $Entity = $_ | Select-Object -Property PartitionKey, RowKey
-                Remove-AzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
+                Remove-CIPPAzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
             }
             if ($Extension -eq 'Sherweb') {
                 $SherwebMigTasks | ForEach-Object {
                     Write-Information "Extension Disabled: Cleaning up scheduled task $($_.Name) for tenant $($_.Tenant)"
                     $Entity = $_ | Select-Object -Property PartitionKey, RowKey
-                    Remove-AzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
+                    Remove-CIPPAzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
                 }
                 $SherwebMigTasks = @() # Clear the list since we removed them all
             }
@@ -161,21 +173,21 @@ function Register-CIPPExtensionScheduledTasks {
         if ($Task.Tenant -notin $MappedTenants) {
             Write-Information "Tenant Removed: Cleaning up scheduled task $($Task.Name) for tenant $($Task.TenantFilter)"
             $Entity = $Task | Select-Object -Property PartitionKey, RowKey
-            Remove-AzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
+            Remove-CIPPAzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
         }
     }
     foreach ($Task in $PushTasks) {
         if ($Task.Tenant -notin $MappedTenants) {
             Write-Information "Tenant Removed: Cleaning up scheduled task $($Task.Name) for tenant $($Task.TenantFilter)"
             $Entity = $Task | Select-Object -Property PartitionKey, RowKey
-            Remove-AzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
+            Remove-CIPPAzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
         }
     }
     foreach ($Task in $SherwebMigTasks) {
         if ($Task.Tenant -notin $MappedTenants) {
             Write-Information "Tenant Removed: Cleaning up scheduled task $($Task.Name) for tenant $($Task.TenantFilter)"
             $Entity = $Task | Select-Object -Property PartitionKey, RowKey
-            Remove-AzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
+            Remove-CIPPAzDataTableEntity -Force @ScheduledTasksTable -Entity $Entity
         }
     }
 }

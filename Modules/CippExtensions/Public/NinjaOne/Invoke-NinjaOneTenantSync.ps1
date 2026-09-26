@@ -462,6 +462,21 @@ function Invoke-NinjaOneTenantSync {
 
         $DevicesToProcess = $Devices | Where-Object { $_.id -notin $ParsedDevices.id }
 
+        # Look up the compliance policy settings each non-compliant device fails in one Graph batch for the tenant.
+        # If the lookup fails the field is left untouched this run rather than being cleared.
+        $NonCompliantSettings = @{}
+        $NonCompliantSettingsAvailable = $false
+        if ($MappedFields.DeviceNonCompliantSettings) {
+            $NonCompliantDeviceIds = @($DevicesToProcess | Where-Object { $_.complianceState -ne 'compliant' -and $_.id } | Select-Object -ExpandProperty id)
+            try {
+                $NonCompliantSettings = Get-NinjaOneDeviceNonCompliantSettings -TenantFilter $Customer.defaultDomainName -ManagedDeviceIds $NonCompliantDeviceIds
+                $NonCompliantSettingsAvailable = $true
+            } catch {
+                $ErrorMessage = Get-CippException -Exception $_
+                Write-LogMessage -tenant $TenantFilter -API 'NinjaOneSync' -message "Failed to retrieve the non-compliant settings for $($NonCompliantDeviceIds.Count) devices, the Intune Non-Compliant Settings field will not be updated this run: $($ErrorMessage.NormalizedError)" -Sev 'Warning' -LogData $ErrorMessage
+            }
+        }
+
         # Parse Devices
         foreach ($Device in $DevicesToProcess) {
 
@@ -550,6 +565,9 @@ function Invoke-NinjaOneTenantSync {
                 }
             }
 
+            # Only non-compliant devices carry failing settings; compliant devices get the field cleared.
+            $DeviceNonCompliantSettings = if ($Device.complianceState -ne 'compliant') { $NonCompliantSettings["$($Device.id)"] } else { $null }
+
             $ParsedDevice = [PSCustomObject]@{
                 PartitionKey        = $Customer.CustomerId
                 RowKey              = $device.AzureADDeviceId
@@ -578,18 +596,11 @@ function Invoke-NinjaOneTenantSync {
                 UserIDs             = $DeviceUserIDs
                 UserDetails         = $DeviceUsersDetail
                 CompliancePolicies  = $DevicePolcies
+                NonCompliantSettings = $DeviceNonCompliantSettings
                 Groups              = $DeviceGroups
                 NinjaDevice         = $MatchedNinjaDevice
                 DeviceLink          = $ParsedDeviceName
             }
-
-            Add-CIPPAzDataTableEntity @DeviceTable -Entity @{
-                PartitionKey = $Customer.CustomerId
-                RowKey       = $device.AzureADDeviceId
-                RawDevice    = "$($ParsedDevice | ConvertTo-Json -Depth 100 -Compress)"
-            } -Force
-
-            $ParsedDevices.add($ParsedDevice)
 
             ### Update NinjaOne Device Fields
             if ($MatchedNinjaDevice) {
@@ -607,8 +618,8 @@ function Invoke-NinjaOneTenantSync {
                             Icon = 'fas fa-laptop'
                         },
                         @{
-                            Name = 'View Devices in CIPP'
-                            Link = "https://$($CIPPURL)/endpoint/MEM/devices?tenantFilter=$($Customer.defaultDomainName)"
+                            Name = 'View Device in CIPP'
+                            Link = "https://$($CIPPURL)/endpoint/MEM/devices/device?deviceId=$($Device.id)&tenantFilter=$($Customer.defaultDomainName)"
                             Icon = 'far fa-eye'
                         }
                     )
@@ -713,19 +724,39 @@ function Invoke-NinjaOneTenantSync {
 
             }
 
-            # Update Device
-            if ($MappedFields.DeviceSummary -or $MappedFields.DeviceLinks -or $MappedFields.DeviceCompliance) {
+            if ($MappedFields.DeviceNonCompliantSettings -and $NonCompliantSettingsAvailable) {
+                # A null value clears the field, so a NinjaOne condition on 'is not empty' only fires for devices with a real failure.
+                $NinjaDeviceUpdate | Add-Member -NotePropertyName $MappedFields.DeviceNonCompliantSettings -NotePropertyValue $DeviceNonCompliantSettings
+            }
+
+            # Update Device. Default to success so devices with no mapped fields are still cached.
+            $DeviceFieldsUpdated = $true
+            if ($MappedFields.DeviceSummary -or $MappedFields.DeviceLinks -or $MappedFields.DeviceCompliance -or $MappedFields.DeviceNonCompliantSettings) {
+                $DeviceFieldsUpdated = $false
                 try {
                     $UpdateBody = $NinjaDeviceUpdate | ConvertTo-Json -Depth 100
                     $Result = Invoke-WebRequest -Uri "https://$($Configuration.Instance)/api/v2/device/$($MatchedNinjaDevice.id)/custom-fields" -Method PATCH -Headers @{Authorization = "Bearer $($token.access_token)" } -ContentType 'application/json; charset=utf-8' -Body $UpdateBody
+                    $DeviceFieldsUpdated = $true
                 } catch {
-                    Write-Verbose "Error details: $($_ | ConvertTo-Json -Depth 5)"
+                    $ErrorMessage = Get-CippException -Exception $_
+                    Write-LogMessage -tenant $TenantFilter -API 'NinjaOneSync' -message "Failed to update NinjaOne custom fields for device '$($Device.deviceName)' ($($MatchedNinjaDevice.id)): $($ErrorMessage.NormalizedError)" -Sev 'Warning' -LogData $ErrorMessage
                 }
+            }
+
+            # Only cache the device once its fields have been written, so a failed update is retried on the next sync instead of being skipped permanently.
+            if ($DeviceFieldsUpdated) {
+                Add-CIPPAzDataTableEntity @DeviceTable -Entity @{
+                    PartitionKey = $Customer.CustomerId
+                    RowKey       = $device.AzureADDeviceId
+                    RawDevice    = "$($ParsedDevice | ConvertTo-Json -Depth 100 -Compress)"
+                } -Force
+
+                $ParsedDevices.add($ParsedDevice)
             }
         }
 
         # Enable Device Updates Subscription if needed.
-        if ($MappedFields.DeviceCompliance) {
+        if ($MappedFields.DeviceCompliance -or $MappedFields.DeviceNonCompliantSettings) {
             New-CIPPGraphSubscription -TenantFilter $TenantFilter -TypeofSubscription 'updated' -BaseURL $CIPPUrl -Resource 'devices' -EventType 'DeviceUpdate' -Headers 'NinjaOneSync'
         }
 
@@ -749,13 +780,13 @@ function Invoke-NinjaOneTenantSync {
 
         [System.Collections.Generic.List[PSCustomObject]]$StaleParsedUsers = Get-CIPPAzDataTableEntity @UsersTable -Filter $UsersFilter
         if (($StaleParsedUsers | Measure-Object).count -gt 0) {
-            Remove-AzDataTableEntity -Force @UsersTable -Entity ($StaleParsedUsers | Select-Object PartitionKey, RowKey)
+            Remove-CIPPAzDataTableEntity -Force @UsersTable -Entity ($StaleParsedUsers | Select-Object PartitionKey, RowKey)
         }
         [System.Collections.Generic.List[PSCustomObject]]$ParsedUsers = @()
 
         [System.Collections.Generic.List[PSCustomObject]]$StaleUserUpdates = Get-CIPPAzDataTableEntity @UsersUpdateTable -Filter $UsersFilter
         if (($StaleUserUpdates | Measure-Object).count -gt 0) {
-            Remove-AzDataTableEntity -Force @UsersUpdateTable -Entity ($StaleUserUpdates | Select-Object PartitionKey, RowKey)
+            Remove-CIPPAzDataTableEntity -Force @UsersUpdateTable -Entity ($StaleUserUpdates | Select-Object PartitionKey, RowKey)
         }
 
         [System.Collections.Generic.List[PSCustomObject]]$UsersMap = Get-CIPPAzDataTableEntity @UsersMapTable -Filter $UsersFilter
@@ -1088,7 +1119,7 @@ function Invoke-NinjaOneTenantSync {
                     },
                     @{
                         Name = 'Research Compromise'
-                        Link = "https://$($CIPPURL)/identity/administration/users/user/bec?userId=$($User.id)&tenantFilter=$($Customer.defaultDomainName)"
+                        Link = "https://$($CIPPURL)/identity/administration/bec/case?userId=$($User.id)&tenantFilter=$($Customer.defaultDomainName)"
                         Icon = 'fas fa-user-secret'
                     }
                 )
@@ -1210,7 +1241,7 @@ function Invoke-NinjaOneTenantSync {
                         if (($NinjaUserCreation | Measure-Object).count -ge 100) {
                             Write-Information 'Creating NinjaOne Users'
                             [System.Collections.Generic.List[PSCustomObject]]$CreatedUsers = (Invoke-WebRequest -Uri "https://$($Configuration.Instance)/api/v2/organization/documents" -Method POST -Headers @{Authorization = "Bearer $($token.access_token)" } -ContentType 'application/json; charset=utf-8' -Body ("[$($NinjaUserCreation.body -join ',')]") -EA Stop).content | ConvertFrom-Json -Depth 100
-                            Remove-AzDataTableEntity -Force @UsersUpdateTable -Entity $NinjaUserCreation
+                            Remove-CIPPAzDataTableEntity -Force @UsersUpdateTable -Entity $NinjaUserCreation
                             [System.Collections.Generic.List[PSCustomObject]]$NinjaUserCreation = @()
                         }
                     } catch {
@@ -1223,7 +1254,7 @@ function Invoke-NinjaOneTenantSync {
                         if (($NinjaUserUpdates | Measure-Object).count -ge 100) {
                             Write-Information 'Updating NinjaOne Users'
                             [System.Collections.Generic.List[PSCustomObject]]$UpdatedUsers = (Invoke-WebRequest -Uri "https://$($Configuration.Instance)/api/v2/organization/documents" -Method PATCH -Headers @{Authorization = "Bearer $($token.access_token)" } -ContentType 'application/json; charset=utf-8' -Body ("[$($NinjaUserUpdates.body -join ',')]") -EA Stop).content | ConvertFrom-Json -Depth 100
-                            Remove-AzDataTableEntity -Force @UsersUpdateTable -Entity $NinjaUserUpdates
+                            Remove-CIPPAzDataTableEntity -Force @UsersUpdateTable -Entity $NinjaUserUpdates
                             [System.Collections.Generic.List[PSCustomObject]]$NinjaUserUpdates = @()
                         }
                     } catch {
@@ -1287,7 +1318,7 @@ function Invoke-NinjaOneTenantSync {
                 if (($NinjaUserCreation | Measure-Object).count -ge 1) {
                     Write-Information 'Creating NinjaOne Users'
                     [System.Collections.Generic.List[PSCustomObject]]$CreatedUsers = (Invoke-WebRequest -Uri "https://$($Configuration.Instance)/api/v2/organization/documents" -Method POST -Headers @{Authorization = "Bearer $($token.access_token)" } -ContentType 'application/json; charset=utf-8' -Body ("[$($NinjaUserCreation.body -join ',')]") -EA Stop).content | ConvertFrom-Json -Depth 100
-                    Remove-AzDataTableEntity -Force @UsersUpdateTable -Entity $NinjaUserCreation
+                    Remove-CIPPAzDataTableEntity -Force @UsersUpdateTable -Entity $NinjaUserCreation
 
                 }
             } catch {
@@ -1300,7 +1331,7 @@ function Invoke-NinjaOneTenantSync {
                 if (($NinjaUserUpdates | Measure-Object).count -ge 1) {
                     Write-Information 'Updating NinjaOne Users'
                     [System.Collections.Generic.List[PSCustomObject]]$UpdatedUsers = (Invoke-WebRequest -Uri "https://$($Configuration.Instance)/api/v2/organization/documents" -Method PATCH -Headers @{Authorization = "Bearer $($token.access_token)" } -ContentType 'application/json; charset=utf-8' -Body ("[$($NinjaUserUpdates.body -join ',')]") -EA Stop).content | ConvertFrom-Json -Depth 100
-                    Remove-AzDataTableEntity -Force @UsersUpdateTable -Entity $NinjaUserUpdates
+                    Remove-CIPPAzDataTableEntity -Force @UsersUpdateTable -Entity $NinjaUserUpdates
                 }
             } catch {
                 $ErrorMessage = Get-CippException -Exception $_
@@ -1557,8 +1588,10 @@ function Invoke-NinjaOneTenantSync {
             } catch {
                 $SharePointTenantName = ($Customer.initialDomainName -split '\.')[0]
                 if ($SharePointTenantName) {
+                    # Sovereign clouds do not use sharepoint.com - map the initial domain's suffix.
+                    $SharePointDomain = Get-CIPPSharePointDomain -TenantDomain $Customer.initialDomainName
+                    $SharePointAdminUrl = "https://$SharePointTenantName-admin.$SharePointDomain"
                     Write-Information "NinjaOneSync: Get-SharePointAdminLink failed for $($Customer.defaultDomainName), using fallback SharePoint admin URL '$SharePointAdminUrl'. Error: $($_.Exception.Message)"
-                    $SharePointAdminUrl = "https://$SharePointTenantName-admin.sharepoint.com"
                 }
             }
 
@@ -1585,7 +1618,11 @@ function Invoke-NinjaOneTenantSync {
                 },
                 @{
                     Name = 'SharePoint Admin'
-                    Link = $SharePointAdminUrl ?? "https://$($Customer.defaultDomainName)-admin.sharepoint.com"
+                    # No guess here: the old fallback pasted defaultDomainName in front of
+                    # '-admin.sharepoint.com' ('contoso.onmicrosoft.com-admin.sharepoint.com') and
+                    # assumed the commercial cloud. Unresolved links are dropped below instead -
+                    # NinjaOne keeps whatever we write, so a bad URL sticks around in their portal.
+                    Link = $SharePointAdminUrl
                     Icon = 'fas fa-shapes'
                 },
                 @{
@@ -1620,6 +1657,9 @@ function Invoke-NinjaOneTenantSync {
                 }
 
             )
+
+            # Drop any portal we could not build a URL for rather than publishing a dead link.
+            $ManagementLinksData = @($ManagementLinksData | Where-Object { $_.Link })
 
             $M365LinksHTML = Get-NinjaOneLinks -Data $ManagementLinksData -Title 'Portals' -SmallCols 2 -MedCols 3 -LargeCols 3 -XLCols 3
 
@@ -2009,7 +2049,7 @@ function Invoke-NinjaOneTenantSync {
             }
 
             # Unused Licenses
-            $UnusedLicenseLink = "https://$CIPPUrl/tenant/standards/bpa-report?tenantFilter=$($Customer.defaultDomainName)"
+            $UnusedLicenseLink = "https://$CIPPUrl/tenant/reports/list-licenses?tenantFilter=$($Customer.defaultDomainName)"
             if (-not $HasLicenseData) {
                 $WidgetData.add([PSCustomObject]@{ Value = 'No data'; Description = 'Unused Licenses'; Colour = '#CCCCCC'; Link = $UnusedLicenseLink })
             } else {
@@ -2025,7 +2065,7 @@ function Invoke-NinjaOneTenantSync {
             $WidgetData.add((& $NewPostureWidget -Description 'Unified Audit Log' -Link "https://security.microsoft.com/auditlogsearch?viewid=Async%20Search&tid=$($Customer.customerId)" -HasData $HasAuditConfig -State $UnifiedAuditLogEnabled))
 
             # Password Never Expires
-            $WidgetData.add((& $NewPostureWidget -Description 'Password Never Expires' -Link "https://$CIPPUrl/tenant/standards/bpa-report?tenantFilter=$($Customer.defaultDomainName)" -HasData $HasDomainData -State $PasswordNeverExpires))
+            $WidgetData.add((& $NewPostureWidget -Description 'Password Never Expires' -Link "https://$CIPPUrl/tenant/administration/domains?tenantFilter=$($Customer.defaultDomainName)" -HasData $HasDomainData -State $PasswordNeverExpires))
 
             # OAuth App Consent
             $WidgetData.add((& $NewPostureWidget -Description 'OAuth App Consent' -Link "https://entra.microsoft.com/$($Customer.defaultDomainName)/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/UserSettings" -HasData $HasAuthPolicy -State $OAuthConsentRestricted))
@@ -2208,45 +2248,56 @@ function Invoke-NinjaOneTenantSync {
                     $DeviceIdHeader      = $ResolvedScanGroup.deviceIdHeader
                     $CveIdHeader         = $ResolvedScanGroup.cveIdHeader
 
-                    $RawVulns = Get-CIPPDbItem -TenantFilter $TenantFilter -Type 'DefenderCVEs' | Where-Object { $_.RowKey -ne 'DefenderCVEs-Count' }
-                    $AllVulns = $RawVulns.Data | ConvertFrom-Json
-                    $CsvRows  = [System.Collections.Generic.List[object]]::new()
+                    $ExceptionsTable      = Get-CIPPTable -TableName 'CveExceptions'
+                    $AllExceptions        = Get-CIPPAzDataTableEntity @ExceptionsTable
+                    $ApplicableExceptions = $AllExceptions | Where-Object { $_.RowKey -eq $TenantFilter -or $_.RowKey -eq 'ALL' }
+                    $ExceptedCveIds       = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                    foreach ($Ex in @($ApplicableExceptions)) {
+                        if ($Ex.cveId) { [void]$ExceptedCveIds.Add([string]$Ex.cveId) }
+                    }
 
-                    if (-not $AllVulns) {
+                    # Fold the cached rows one at a time instead of materialising a parsed
+                    # copy of every Data blob before the CSV build - only the CSV rows are
+                    # needed, so each parsed graph is collectable as soon as its devices are
+                    # folded (see Get-CIPPCVEReport for the same pattern).
+                    $CsvRows       = [System.Collections.Generic.List[object]]::new()
+                    $VulnCount     = 0
+                    $ExceptedCount = 0
+                    $SkippedCount  = 0
+
+                    foreach ($Row in Get-CIPPDbItem -TenantFilter $TenantFilter -Type 'DefenderCVEs') {
+                        if ($Row.RowKey -eq 'DefenderCVEs-Count' -or -not $Row.Data) { continue }
+                        $Item = $Row.Data | ConvertFrom-Json
+                        $VulnCount++
+
+                        if ([string]::IsNullOrWhiteSpace($Item.cveId)) {
+                            $SkippedCount++
+                            continue
+                        }
+                        if ($ExceptedCveIds.Contains([string]$Item.cveId)) {
+                            $ExceptedCount++
+                            continue
+                        }
+                        if ($Item.deviceDetailsJson) {
+                            $Devices = ConvertFrom-Json $Item.deviceDetailsJson | Sort-Object -Property deviceName -Unique
+                            foreach ($Dev in $Devices) {
+                                [void]$CsvRows.Add([PSCustomObject]@{
+                                $DeviceIdHeader = $Dev.deviceName.Trim()
+                                $CveIdHeader    = $Item.cveId.Trim()
+                                })
+                            }
+                        }
+                    }
+
+                    if ($VulnCount -eq 0) {
                         Write-LogMessage -API 'NinjaOneSync' -tenant $TenantFilter -message 'CVE sync — no vulnerability data returned' -sev 'Warning'
                         [void]$CsvRows.Add([PSCustomObject]@{
                                     $DeviceIdHeader = ""
                                     $CveIdHeader    = ""})
                     } else {
-                        $ExceptionsTable      = Get-CIPPTable -TableName 'CveExceptions'
-                        $AllExceptions        = Get-CIPPAzDataTableEntity @ExceptionsTable
-                        $ApplicableExceptions = $AllExceptions | Where-Object { $_.RowKey -eq $TenantFilter -or $_.RowKey -eq 'ALL' }
-
-                        if ($ApplicableExceptions) {
-                            $ExceptedCveIds = $ApplicableExceptions | Select-Object -ExpandProperty cveId -Unique
-                            $BeforeCount    = $AllVulns.Count
-                            $AllVulns       = $AllVulns | Where-Object { $_.cveId -notin $ExceptedCveIds }
-                            Write-LogMessage -API 'NinjaOneSync' -tenant $TenantFilter -message "CVE sync — filtered $($BeforeCount - $AllVulns.Count) excepted CVEs, $($AllVulns.Count) remaining" -sev 'Info'
+                        if ($ExceptedCveIds.Count -gt 0) {
+                            Write-LogMessage -API 'NinjaOneSync' -tenant $TenantFilter -message "CVE sync — filtered $ExceptedCount excepted CVEs, $($VulnCount - $ExceptedCount) remaining" -sev 'Info'
                         }
-
-                        $SkippedCount = 0
-
-                        foreach ($Item in $AllVulns) {
-                            if ([string]::IsNullOrWhiteSpace($Item.cveId)) {
-                                $SkippedCount++
-                                continue
-                            }
-                            if ($Item.deviceDetailsJson) {
-                                $Devices = ConvertFrom-Json $Item.deviceDetailsJson | Sort-Object -Property deviceName -Unique
-                                foreach ($Dev in $Devices) {
-                                    [void]$CsvRows.Add([PSCustomObject]@{
-                                    $DeviceIdHeader = $Dev.deviceName.Trim()
-                                    $CveIdHeader    = $Item.cveId.Trim()
-                                    })
-                                }
-                            }
-                        }
-
                         if ($SkippedCount -gt 0) {
                             Write-LogMessage -API 'NinjaOneSync' -tenant $TenantFilter -message "CVE sync — skipped $SkippedCount rows (missing deviceName or cveId)" -sev 'Warning'
                         }
@@ -2281,12 +2332,12 @@ function Invoke-NinjaOneTenantSync {
 
         Write-Information 'Cleaning Users Cache'
         if (($ParsedUsers | Measure-Object).count -gt 0) {
-            Remove-AzDataTableEntity -Force @UsersTable -Entity ($ParsedUsers | Select-Object PartitionKey, RowKey)
+            Remove-CIPPAzDataTableEntity -Force @UsersTable -Entity ($ParsedUsers | Select-Object PartitionKey, RowKey)
         }
 
         Write-Information 'Cleaning Device Cache'
         if (($ParsedDevices | Measure-Object).count -gt 0) {
-            Remove-AzDataTableEntity -Force @DeviceTable -Entity ($ParsedDevices | Select-Object PartitionKey, RowKey)
+            Remove-CIPPAzDataTableEntity -Force @DeviceTable -Entity ($ParsedDevices | Select-Object PartitionKey, RowKey)
         }
 
         Write-Information "Total Fetch Time: $((New-TimeSpan -Start $StartTime -End $FetchEnd).TotalSeconds)"

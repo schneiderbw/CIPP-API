@@ -25,6 +25,11 @@ function New-CIPPIntuneAppDeployment {
     $ExcludeGroup = $AppConfig.excludeGroup
     $AppType = if ($AppConfig.type) { $AppConfig.type } else { 'Choco' }
 
+    # Older templates may hold a Graph-read body (has an id); only Office/Edge can deploy from one.
+    if ($IntuneBody.id -and $AppType -notin @('OfficeApp', 'EdgeApp')) {
+        throw "'$($AppConfig.Applicationname)' was templated from an existing Intune application with uploaded installer content. CIPP cannot deploy uploaded installer content; only script or package based applications can be templated. Rebuild this template entry as a Store, Chocolatey, Office, Edge, MSP or Custom Application."
+    }
+
     # Build IntuneBody from raw config if not pre-built (template/standard path)
     if (-not $IntuneBody -and $AppType -eq 'WinGet') {
         $PackageId = $AppConfig.packagename ?? $AppConfig.PackageName
@@ -116,8 +121,13 @@ function New-CIPPIntuneAppDeployment {
 
     $BaseUri = 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps'
 
-    # Check if app already exists (any type with matching display name)
-    $ApplicationList = New-GraphGetRequest -Uri $BaseUri -tenantid $TenantFilter | Where-Object { $_.DisplayName -eq $AppConfig.Applicationname }
+    # Check if app already exists (any type with matching display name). Office and Edge are
+    # singletons per tenant whose Graph display name may differ from the template, so match on type.
+    $ApplicationList = switch ($AppType) {
+        'OfficeApp' { New-GraphGetRequest -Uri $BaseUri -tenantid $TenantFilter | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.officeSuiteApp' } }
+        'EdgeApp' { New-GraphGetRequest -Uri $BaseUri -tenantid $TenantFilter | Where-Object { $_.'@odata.type' -eq '#microsoft.graph.windowsMicrosoftEdgeApp' } }
+        default { New-GraphGetRequest -Uri $BaseUri -tenantid $TenantFilter | Where-Object { $_.DisplayName -eq $AppConfig.Applicationname } }
+    }
     if ($ApplicationList.displayname.count -ge 1) {
         Write-LogMessage -API $APIName -tenant $TenantFilter -message "$($AppConfig.Applicationname) exists. Skipping this application" -Sev 'Info'
         return $null
@@ -195,14 +205,18 @@ function New-CIPPIntuneAppDeployment {
             $NewApp = Add-CIPPW32ScriptApplication -TenantFilter $TenantFilter -Properties ([PSCustomObject]$Properties)
         }
         'OfficeApp' {
-            # Strip read-only properties that Graph API won't accept on create
-            $ObjBody = $IntuneBody
-            if ($ObjBody -is [string]) { $ObjBody = $ObjBody | ConvertFrom-Json -Depth 100 }
-            $ReadOnlyProps = @('id', 'createdDateTime', 'lastModifiedDateTime', 'uploadState', 'publishingState', 'isAssigned', 'roleScopeTagIds', 'dependentAppCount', 'supersedingAppCount', 'supersededAppCount', 'committedContentVersion', 'fileName', 'size', 'assignments@odata.context', 'assignments', 'AppAssignment', 'AppExclude')
-            foreach ($prop in $ReadOnlyProps) {
-                if ($ObjBody.PSObject.Properties[$prop]) {
-                    $ObjBody.PSObject.Properties.Remove($prop)
-                }
+            # Templates built in the wizard carry the individual Office fields rather than a
+            # pre-built IntuneBody, so build the body the same way Invoke-AddOfficeApp does.
+            $ObjBody = Get-CIPPOfficeAppBody -Config $AppConfig
+            if (-not $ObjBody) {
+                throw "No Office configuration could be built from the supplied settings for '$($AppConfig.Applicationname)'."
+            }
+            $NewApp = New-GraphPostRequest -Uri $BaseUri -tenantid $TenantFilter -Body (ConvertTo-Json -InputObject $ObjBody -Depth 10) -Type POST
+        }
+        'EdgeApp' {
+            $ObjBody = Get-CIPPEdgeAppBody -Config $AppConfig
+            if (-not $ObjBody) {
+                throw "No Edge configuration could be built from the supplied settings for '$($AppConfig.Applicationname)'."
             }
             $NewApp = New-GraphPostRequest -Uri $BaseUri -tenantid $TenantFilter -Body (ConvertTo-Json -InputObject $ObjBody -Depth 10) -Type POST
         }
@@ -221,6 +235,7 @@ function New-CIPPIntuneAppDeployment {
                 'WinGet' { 'WinGet' }
                 'WinGetNew' { 'WinGet' }
                 'OfficeApp' { $null }
+                'EdgeApp' { $null }
                 default { 'Win32Lob' }
             }
             Start-Sleep -Milliseconds 200
@@ -233,6 +248,11 @@ function New-CIPPIntuneAppDeployment {
                 APIName       = $APIName
             }
             if ($AppTypeForAssignment) { $AssignParams.AppType = $AppTypeForAssignment }
+            # Group ids queued by the deploy drawer's single-tenant picker; they win over the
+            # name resolution of assignTo/excludeGroup inside Set-CIPPAssignedApplication.
+            # '@($null).Count' is 1, so test the value before counting it.
+            if ($AppConfig.GroupIds -and @($AppConfig.GroupIds).Count -gt 0) { $AssignParams.GroupIds = @($AppConfig.GroupIds) }
+            if ($AppConfig.ExcludeGroupIds -and @($AppConfig.ExcludeGroupIds).Count -gt 0) { $AssignParams.ExcludeGroupIds = @($AppConfig.ExcludeGroupIds) }
             Set-CIPPAssignedApplication @AssignParams
         }
     }
