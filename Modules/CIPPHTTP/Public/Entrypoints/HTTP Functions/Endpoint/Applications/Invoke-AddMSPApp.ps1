@@ -26,14 +26,22 @@ function Invoke-AddMSPApp {
     }
 
     $AssignTo = $Request.Body.AssignTo -eq 'customGroup' ? $Request.Body.CustomGroup : $Request.Body.AssignTo
-    $intuneBody = Get-Content "AddMSPApp\$RmmName.app.json" | ConvertFrom-Json
-    $intuneBody.displayName = $RMMApp.DisplayName
+    $ExcludeGroup = $Request.Body.excludeGroup
+    # Group ids from the deploy drawer's single-tenant picker. CustomGroup/excludeGroup still
+    # carry the display names for logging and as a fallback if the ids are ever dropped.
+    $GroupIds = @($Request.Body.GroupIds | Where-Object { $_ })
+    $ExcludeGroupIds = @($Request.Body.ExcludeGroupIds | Where-Object { $_ })
+    $AppTemplatePath = Join-Path $env:CIPPRootPath "AddMSPApp\$RmmName.app.json"
+    $AppTemplateJson = Get-Content -LiteralPath $AppTemplatePath -Raw
 
     $AllowedTenants = Test-CIPPAccess -Request $Request -TenantList
     $Tenants = $Request.Body.selectedTenants | Where-Object { $AllowedTenants -contains $_.customerId -or $AllowedTenants -contains 'AllTenants' }
     $SuccessCount = 0
     $ErrorCount = 0
     $Results = foreach ($Tenant in $Tenants) {
+        $intuneBody = $AppTemplateJson | ConvertFrom-Json
+        $intuneBody.displayName = $RMMApp.DisplayName
+
         # Build the install/uninstall command lines for this tenant. Get-CIPPMSPAppInstallCommand
         # resolves each param whether it is a per-tenant keyed value (interactive deploy) or a
         # flat value / %CIPP variable% (Application Template deploy).
@@ -50,6 +58,9 @@ function Invoke-AddMSPApp {
                 tenant          = $Tenant.defaultDomainName
                 ApplicationName = $RMMApp.DisplayName
                 assignTo        = $AssignTo
+                excludeGroup    = $ExcludeGroup
+                GroupIds        = $GroupIds
+                ExcludeGroupIds = $ExcludeGroupIds
                 IntuneBody      = $intuneBody
                 type            = 'MSPApp'
                 MSPAppName      = $RMMApp.RMMName.value

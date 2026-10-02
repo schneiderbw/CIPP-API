@@ -9,15 +9,8 @@ function Invoke-CIPPTestCollection {
         name prefix via Get-Command — no filesystem paths are used, so this works
         correctly with ModuleBuilder compiled modules.
 
-        Suite-to-pattern map (single source of truth):
-        - ZTNA             → Invoke-CippTestZTNA*
-        - ORCA             → Invoke-CippTestORCA*
-        - EIDSCA           → Invoke-CippTestEIDSCA*
-        - CISA             → Invoke-CippTestCISA*
-        - CIS              → Invoke-CippTestCIS_*
-        - SMB1001          → Invoke-CippTestSMB1001_*
-        - CopilotReadiness → Invoke-CippTestCopilotReady*
-        - E8               → Invoke-CippTestE8_*
+        The suite-to-pattern map lives in Get-CippTestSuitePatterns (single source of truth,
+        also used to label stored results with their suite). One special case here:
         - Custom           → Special: enumerates enabled ScriptGuids from DB and calls
                              Invoke-CippTestCustomScripts once per guid (the function
                              requires a ScriptGuid parameter to filter the table query)
@@ -34,26 +27,17 @@ function Invoke-CIPPTestCollection {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('ZTNA', 'ORCA', 'EIDSCA', 'CISA', 'CIS', 'SMB1001', 'CopilotReadiness', 'GenericTests', 'E8', 'Custom')]
+        [ValidateSet('ZTNA', 'ORCA', 'EIDSCA', 'CISA', 'CIS', 'SMB1001', 'CopilotReadiness', 'GenericTests', 'E8', 'SecuritySimulations', 'Custom')]
         [string]$SuiteName,
 
         [Parameter(Mandatory = $true)]
         [string]$TenantFilter
     )
 
-    # Canonical suite-to-pattern map — single source of truth for grouping.
-    # Discovery is done via Get-Command so this is path-independent and ModuleBuilder safe.
-    $SuitePatterns = @{
-        ZTNA             = 'Invoke-CippTestZTNA*'
-        ORCA             = 'Invoke-CippTestORCA*'
-        EIDSCA           = 'Invoke-CippTestEIDSCA*'
-        CISA             = 'Invoke-CippTestCISA*'
-        CIS              = 'Invoke-CippTestCIS_*'
-        SMB1001          = 'Invoke-CippTestSMB1001_*'
-        CopilotReadiness = 'Invoke-CippTestCopilotReady*'
-        GenericTests     = 'Invoke-CippTestGenericTest*'
-        E8               = 'Invoke-CippTestE8_*'
-    }
+    # Canonical suite-to-pattern map — single source of truth, shared with the suite labelling in
+    # Get-CIPPTestResultsTenants. Discovery is done via Get-Command so this is path-independent
+    # and ModuleBuilder safe.
+    $SuitePatterns = Get-CippTestSuitePatterns
 
     $SuiteStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $SuccessCount = 0

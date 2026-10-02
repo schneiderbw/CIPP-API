@@ -10,7 +10,7 @@ function Start-AuditLogSearchCreation {
     param()
     try {
         $ConfigTable = Get-CippTable -TableName 'WebhookRules'
-        $ConfigEntries = Get-CIPPAzDataTableEntity @ConfigTable -Filter "PartitionKey eq 'Webhookv2'" | ForEach-Object {
+        $ConfigEntries = Get-CIPPAzDataTableEntity @ConfigTable -Filter "PartitionKey eq 'Webhookv2'" | Where-Object { $_.Disabled -ne $true } | ForEach-Object {
             $ConfigEntry = $_
             if (!$ConfigEntry.excludedTenants) {
                 $ConfigEntry | Add-Member -MemberType NoteProperty -Name 'excludedTenants' -Value @() -Force
@@ -46,7 +46,7 @@ function Start-AuditLogSearchCreation {
         }
 
         if ($ExpiredDisabledRows.Count -gt 0) {
-            Remove-AzDataTableEntity @AuditDisabledTable -Entity $ExpiredDisabledRows -Force | Out-Null
+            Remove-CIPPAzDataTableEntity @AuditDisabledTable -Entity $ExpiredDisabledRows -Force | Out-Null
         }
 
         # Round time down to nearest minute

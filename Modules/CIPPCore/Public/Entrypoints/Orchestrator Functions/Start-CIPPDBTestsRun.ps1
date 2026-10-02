@@ -20,7 +20,10 @@ function Start-CIPPDBTestsRun {
         # Optional subset of suites to run (e.g. 'Custom'). Omit to run every suite.
         # Suite names must match the ValidateSet in Invoke-CIPPTestCollection.
         [Parameter(Mandatory = $false)]
-        [string[]]$Suites
+        [string[]]$Suites,
+
+        [Parameter(Mandatory = $false)]
+        [int]$Priority
     )
 
     Write-Information "Starting tests run for tenant: $TenantFilter"
@@ -48,6 +51,14 @@ function Start-CIPPDBTestsRun {
         $AllTenantsList = if ($TenantFilter -eq 'allTenants') {
             $DbCounts = Get-CIPPDbItem -CountsOnly -TenantFilter 'allTenants'
             $TenantsWithData = $DbCounts | Where-Object { (($_.DataCount ?? $_.Count) ?? 0) -gt 0 } | Select-Object -ExpandProperty PartitionKey -Unique
+            $ActiveTenants = [System.Collections.Generic.HashSet[string]]::new(
+                [string[]]@((Get-Tenants).defaultDomainName | Where-Object { $_ }),
+                [System.StringComparer]::OrdinalIgnoreCase)
+            $SkippedCount = @($TenantsWithData | Where-Object { -not $ActiveTenants.Contains($_) }).Count
+            $TenantsWithData = @($TenantsWithData | Where-Object { $ActiveTenants.Contains($_) })
+            if ($SkippedCount -gt 0) {
+                Write-Information "Skipped $SkippedCount tenant(s) with cached data that are excluded or no longer managed"
+            }
             Write-Information "Found $($TenantsWithData.Count) tenants with data in database"
             $TenantsWithData
         } else {
@@ -95,6 +106,10 @@ function Start-CIPPDBTestsRun {
                     TenantFilter = $TenantFilter
                 }
             }
+        }
+
+        if ($PSBoundParameters.ContainsKey('Priority')) {
+            $InputObject | Add-Member -NotePropertyName Priority -NotePropertyValue $Priority
         }
 
         $InstanceId = Start-CIPPOrchestrator -InputObject $InputObject

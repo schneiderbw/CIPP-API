@@ -5,7 +5,7 @@ function Invoke-ListTenants {
     .ROLE
         CIPP.Core.Read
     .DESCRIPTION
-        Lists all managed tenants accessible to the current user, with support for cache clearing and tenant filtering. This is the primary endpoint for tenant enumeration.
+        Lists all managed tenants accessible to the current user, with support for cache clearing and tenant filtering. This is the primary endpoint for tenant enumeration. Pass Search for a fuzzy, case-insensitive substring lookup across displayName, defaultDomainName, initialDomainName and customerId when the exact domain is unknown.
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
@@ -21,6 +21,11 @@ function Invoke-ListTenants {
     $AllTenantSelector = $Request.Query.AllTenantSelector
 
     $IncludeOffboardingDefaults = $Request.Query.IncludeOffboardingDefaults
+
+    # Fuzzy tenant lookup: case-insensitive substring match over displayName, defaultDomainName,
+    # initialDomainName and customerId. Arbitrary verified domains are not indexed by Get-Tenants and
+    # cannot be matched here. Supports '*' wildcards. Use this when you don't know the exact domain.
+    $Search = $Request.Query.Search
 
     # Clear Cache
     if ($Request.Body.ClearCache -eq $true) {
@@ -50,9 +55,16 @@ function Invoke-ListTenants {
         #Get-Tenants -IncludeAll -TriggerRefresh
         return
     }
+    # Re-reads the tenant given in tenantFilter, or queues a refresh of all tenants when omitted. Returns a Results message instead of the tenant list.
     if ($Request.Query.TriggerRefresh) {
-        if ($Request.Query.TenantFilter -and $Request.Query.TenantFilter -ne 'AllTenants') {
-            Get-Tenants -TriggerRefresh -TenantFilter $Request.Query.TenantFilter
+        $TenantFilter = $Request.Query.TenantFilter
+        if ($TenantFilter -and $TenantFilter -ne 'AllTenants') {
+            $Refreshed = @(Get-Tenants -TriggerRefresh -TenantFilter $TenantFilter)
+            $Results = if ($Refreshed) {
+                "Refreshed tenant $($Refreshed[0].displayName) ($($Refreshed[0].defaultDomainName))."
+            } else {
+                "Tenant '$TenantFilter' not found."
+            }
         } else {
             $InputObject = [PSCustomObject]@{
                 Batch            = @(
@@ -64,7 +76,12 @@ function Invoke-ListTenants {
                 SkipLog          = $true
             }
             Start-CIPPOrchestrator -InputObject $InputObject
+            $Results = 'Refresh of all tenants queued. The list updates once it completes.'
         }
+        return ([HttpResponseContext]@{
+                StatusCode = [HttpStatusCode]::OK
+                Body       = @{ Results = $Results }
+            })
     }
     try {
         $TenantFilter = $Request.Query.tenantFilter
@@ -80,6 +97,15 @@ function Invoke-ListTenants {
 
         if ($TenantAccess -notcontains 'AllTenants') {
             $Tenants = $Tenants | Where-Object -Property customerId -In $TenantAccess
+        }
+
+        if ($Search) {
+            $Tenants = @($Tenants | Where-Object {
+                    $_.displayName -like "*$Search*" -or
+                    $_.defaultDomainName -like "*$Search*" -or
+                    $_.initialDomainName -like "*$Search*" -or
+                    $_.customerId -like "*$Search*"
+                })
         }
 
         # If offboarding defaults are requested, fetch them
@@ -116,7 +142,6 @@ function Invoke-ListTenants {
                     defaultDomainName = 'AllTenants'
                     displayName       = '*All Tenants'
                     domains           = 'AllTenants'
-                    GraphErrorCount   = 0
                 }
 
                 # Add offboarding defaults to AllTenants object if requested
@@ -136,8 +161,29 @@ function Invoke-ListTenants {
                 $Body = $Tenants
             }
             if ($Request.Query.Mode -eq 'TenantList') {
-                # add portal link properties
-                $Body = $Body | Select-Object *, @{Name = 'portal_m365'; Expression = { "https://admin.cloud.microsoft/?delegatedOrg=$($_.initialDomainName)" } },
+                # Get-TenantGroups is cached and already scoped to the groups the caller may see.
+                $GroupsByCustomerId = @{}
+                try {
+                    foreach ($Group in @(Get-TenantGroups)) {
+                        foreach ($Member in @($Group.Members)) {
+                            if (!$Member.customerId) { continue }
+                            if (-not $GroupsByCustomerId.ContainsKey($Member.customerId)) {
+                                $GroupsByCustomerId[$Member.customerId] = [System.Collections.Generic.List[object]]::new()
+                            }
+                            $GroupsByCustomerId[$Member.customerId].Add([PSCustomObject]@{
+                                    Name      = $Group.Name
+                                    GroupType = $Group.GroupType
+                                })
+                        }
+                    }
+                } catch {
+                    Write-LogMessage -headers $Headers -API $APIName -message "Failed to retrieve tenant groups for the tenant list. The error is: $($_.Exception.Message)" -Sev 'Warning'
+                }
+
+                # add portal link properties. The unary comma on tenantGroups is required:
+                # Select-Object unrolls calculated property values.
+                $Body = $Body | Select-Object *, @{Name = 'tenantGroups'; Expression = { , @($GroupsByCustomerId[$_.customerId] | Sort-Object -Property Name) } },
+                @{Name = 'portal_m365'; Expression = { "https://admin.cloud.microsoft/?delegatedOrg=$($_.initialDomainName)" } },
                 @{Name = 'portal_exchange'; Expression = { "https://admin.cloud.microsoft/exchange?delegatedOrg=$($_.initialDomainName)" } },
                 @{Name = 'portal_entra'; Expression = { "https://entra.microsoft.com/$($_.defaultDomainName)" } },
                 @{Name = 'portal_teams'; Expression = { "https://admin.teams.microsoft.com?delegatedOrg=$($_.initialDomainName)" } },
@@ -145,7 +191,23 @@ function Invoke-ListTenants {
                 @{Name = 'portal_intune'; Expression = { "https://intune.microsoft.com/$($_.defaultDomainName)" } },
                 @{Name = 'portal_security'; Expression = { "https://security.microsoft.com/?tid=$($_.customerId)" } },
                 @{Name = 'portal_compliance'; Expression = { "https://purview.microsoft.com/?tid=$($_.customerId)" } },
-                @{Name = 'portal_sharepoint'; Expression = { "/api/ListSharePointAdminUrl?tenantFilter=$($_.defaultDomainName)" } },
+                @{Name = 'portal_sharepoint'; Expression = {
+                        # Unlike the other portals, SharePoint's host name cannot be derived from the
+                        # tenant - it has to be resolved through Graph. Hand out the cached URL when we
+                        # have one so the link behaves like every other portal, and fall back to the
+                        # endpoint that resolves (and caches) it on first use.
+                        #
+                        # A cached URL whose TLD does not match the tenant's own was stored before
+                        # sovereign clouds were handled (a .com link for a sharepoint.de tenant,
+                        # issue #269). Send those back through the resolver, which overwrites the row.
+                        $CachedAdminUrl = $_.SharepointAdminUrl
+                        if ($CachedAdminUrl -and $_.initialDomainName) {
+                            $ExpectedTld = (Get-CIPPSharePointDomain -TenantDomain $_.initialDomainName) -split '\.' | Select-Object -Last 1
+                            if ((([uri]$CachedAdminUrl).Host -split '\.' | Select-Object -Last 1) -ne $ExpectedTld) { $CachedAdminUrl = $null }
+                        }
+                        if ($CachedAdminUrl) { $CachedAdminUrl } else { "/api/ListSharePointAdminUrl?tenantFilter=$($_.defaultDomainName)" }
+                    }
+                },
                 @{Name = 'portal_platform'; Expression = { "https://admin.powerplatform.microsoft.com/account/login/$($_.customerId)" } },
                 @{Name = 'portal_bi'; Expression = { "https://app.powerbi.com/admin-portal?ctid=$($_.customerId)" } }
             }

@@ -174,7 +174,7 @@ function Test-CIPPGDAPGroupMappings {
                 if ($Correction.OldGroupId -and $Correction.OldGroupId -ne $Mapping.GroupId) {
                     $OldEntity = Get-CIPPAzDataTableEntity @RolesTable -Filter "PartitionKey eq 'Roles' and RowKey eq '$($Correction.OldGroupId)'"
                     if ($OldEntity) {
-                        Remove-AzDataTableEntity -Force @RolesTable -Entity $OldEntity
+                        Remove-CIPPAzDataTableEntity -Force @RolesTable -Entity $OldEntity
                     }
                 }
                 Add-CIPPAzDataTableEntity @RolesTable -Entity @{
@@ -186,6 +186,7 @@ function Test-CIPPGDAPGroupMappings {
                     roleDefinitionId = [string]$Mapping.roleDefinitionId
                 } -Force
             }
+            Write-LogMessage -headers $Headers -API $APIName -message "Wrote back $($Corrections.Count) corrected GDAP group mapping(s) to GDAPRoles" -Sev 'Info'
         } catch {
             $ErrorMessage = Get-CippException -Exception $_
             Write-LogMessage -headers $Headers -API $APIName -message "Failed to write corrected GDAP group mappings to GDAPRoles: $($ErrorMessage.NormalizedError)" -Sev 'Error' -LogData $ErrorMessage
@@ -197,6 +198,7 @@ function Test-CIPPGDAPGroupMappings {
         if ($TemplateId) {
             try {
                 Add-CIPPGDAPRoleTemplate -TemplateId $TemplateId -RoleMappings ($Mappings | Select-Object -Property RoleName, GroupName, GroupId, roleDefinitionId) -Overwrite
+                Write-LogMessage -headers $Headers -API $APIName -message "Wrote corrected GDAP group mappings to template '$TemplateId'" -Sev 'Info'
             } catch {
                 $ErrorMessage = Get-CippException -Exception $_
                 Write-LogMessage -headers $Headers -API $APIName -message "Failed to write corrected GDAP group mappings to template '$TemplateId': $($ErrorMessage.NormalizedError)" -Sev 'Error' -LogData $ErrorMessage
@@ -209,6 +211,7 @@ function Test-CIPPGDAPGroupMappings {
                 if ($Invite) {
                     $Invite.RoleMappings = [string](@($Mappings | Select-Object -Property RoleName, GroupName, GroupId, roleDefinitionId) | ConvertTo-Json -Depth 10 -Compress)
                     Add-CIPPAzDataTableEntity @InviteTable -Entity $Invite -Force
+                    Write-LogMessage -headers $Headers -API $APIName -message "Wrote corrected GDAP group mappings to invite '$InviteRowKey'" -Sev 'Info'
                 }
             } catch {
                 $ErrorMessage = Get-CippException -Exception $_

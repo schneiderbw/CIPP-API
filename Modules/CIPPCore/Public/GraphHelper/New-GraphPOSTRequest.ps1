@@ -78,8 +78,9 @@ function New-GraphPOSTRequest {
                     }
                     $ShouldRetry = $true
                 }
-                # Check for "Resource temporarily unavailable"
-                elseif ($Message -like '*Resource temporarily unavailable*' -or $Message -like '*Too many requests*') {
+                # Check for "Resource temporarily unavailable" / SharePoint CSOM throttling
+                # ("Server busy, please retry" is transient and safe to retry, e.g. ListSiteProperties).
+                elseif ($Message -like '*Resource temporarily unavailable*' -or $Message -like '*Too many requests*' -or $Message -like '*Server busy*') {
                     $WaitTime = Get-Random -Minimum 1.1 -Maximum 3.1
                     $RetryReason = 'Resource temporarily unavailable.'
                     $ShouldRetry = $true
@@ -159,6 +160,6 @@ function New-GraphPOSTRequest {
             return $ReturnedData
         }
     } else {
-        Write-Error 'Not allowed. You cannot manage your own tenant or tenants not under your scope'
+        Write-Error (Get-AuthorisedRequestError -TenantID $tenantid -Context 'Graph request')
     }
 }
